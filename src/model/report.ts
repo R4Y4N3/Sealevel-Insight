@@ -31,6 +31,7 @@ export interface FileMetric {
   implBlocks: number;
   unsafeBlocks: number;
   macroInvocations: number;
+  sha256?: string;
   parseError?: string;
 }
 
@@ -115,7 +116,34 @@ export interface SecuritySurface {
   pdaSites: PdaSite[];
 }
 
-export type PackageKind = 'solana-program' | 'library' | 'test' | 'unknown';
+export type PackageKind = 'solana-program' | 'program-library' | 'library' | 'client' | 'test' | 'build-tool' | 'generated' | 'unknown';
+
+export interface ProgramIdentity {
+  programId?: string;
+  sources: Evidence[];
+  conflicts: Evidence[];
+}
+
+export interface Capability {
+  id: string;
+  label: string;
+  evidence: Evidence[];
+}
+
+export interface ReviewHotspot {
+  id: string;
+  label: string;
+  score: number;
+  reasons: string[];
+  location?: SourceLocation;
+}
+
+export interface SemanticCoverage {
+  parsedFiles: { resolved: number; total: number; percent: number };
+  instructionContexts: { resolved: number; total: number; percent: number };
+  cpiTargets: { resolved: number; total: number; percent: number };
+  pdaSeeds: { resolved: number; total: number; percent: number };
+}
 
 export interface InstructionAccountRelationship {
   instructionId: string;
@@ -142,6 +170,7 @@ export interface ProgramUnit {
   rootUri?: string;
   packageKind?: PackageKind;
   packageEvidence?: Evidence[];
+  identity?: ProgramIdentity;
   rustFiles: FileMetric[];
   functions: FunctionMetric[];
   instructions: InstructionInfo[];
@@ -150,15 +179,20 @@ export interface ProgramUnit {
   securitySurface: SecuritySurface;
   relationships?: InstructionAccountRelationship[];
   architecture?: { nodes: ArchitectureNode[]; edges: ArchitectureEdge[] };
+  capabilities?: Capability[];
+  reviewHotspots?: ReviewHotspot[];
 }
 
 export interface WorkspaceReport {
   schemaVersion: string;
   tool: { name: string; version: string };
   generatedAt: string;
+  workspace?: { name?: string; roots?: string[] };
   programs: ProgramUnit[];
   files: FileMetric[];
   diagnostics: string[];
+  coverage?: SemanticCoverage;
+  reviewProfile?: ReviewHotspot[];
   summary: {
     rustFiles: number;
     loc: number;

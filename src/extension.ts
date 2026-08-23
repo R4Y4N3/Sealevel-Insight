@@ -3,9 +3,13 @@ import { analyzeSources } from './analysis/analyzer';
 import { scanWorkspace } from './discovery/workspaceScanner';
 import { showReport } from './ui/reportPanel';
 import { WorkspaceReport } from './model/report';
+import { InsightExplorer, InsightCodeLens, InsightHover } from './ui/explorer';
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Sealevel Insight');
+  const explorer = new InsightExplorer();
+  const codeLens = new InsightCodeLens();
+  let lastReport: WorkspaceReport | undefined;
   const command = vscode.commands.registerCommand('sealevelInsight.analyzeWorkspace', async () => {
     if (!vscode.workspace.workspaceFolders?.length) {
       void vscode.window.showWarningMessage('Sealevel Insight requires an open workspace.');
@@ -19,6 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
         progress.report({ message: `Parsing ${sources.length} Rust files` });
         const runtimePath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter.wasm').fsPath;
         const report = await analyzeSources(sources, wasmPath, runtimePath);
+        lastReport = report;
+        explorer.setReport(report);
+        codeLens.setReport(report);
         report.diagnostics.forEach(diagnostic => output.appendLine(diagnostic));
         if (report.diagnostics.length) output.show(true);
         showReport(context.extensionUri, report);
@@ -40,7 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.workspace.fs.writeFile(uri, Buffer.from(portable, 'utf8'));
     }
   });
-  context.subscriptions.push(output, command, exportJson);
+  context.subscriptions.push(output, command, exportJson, vscode.window.registerTreeDataProvider('sealevelInsightExplorer', explorer), vscode.languages.registerCodeLensProvider({ language: 'rust' }, codeLens), vscode.languages.registerHoverProvider({ language: 'rust' }, new InsightHover(() => lastReport)));
 }
 
 export function deactivate(): void { }

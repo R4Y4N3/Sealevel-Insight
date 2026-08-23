@@ -12,13 +12,18 @@ export async function scanWorkspace(): Promise<RustSourceInput[]> {
   const uris = await vscode.workspace.findFiles(validIncludes.length === 1 ? validIncludes[0] : `{${validIncludes.join(',')}}`, exclude);
   const manifests = await vscode.workspace.findFiles('**/Cargo.toml', exclude);
   const packages = new Map(await Promise.all(manifests.map(async uri => [path.dirname(uri.fsPath), { uri, manifest: await readManifest(uri) }] as const)));
-  return Promise.all(uris.map(async uri => {
+  const maxFileSize = Math.max(1, vscode.workspace.getConfiguration('sealevelInsight').get<number>('maxFileSize', 5242880));
+  const includeTests = vscode.workspace.getConfiguration('sealevelInsight').get<boolean>('includeTests', false);
+  const results: Array<RustSourceInput | undefined> = await Promise.all(uris.map(async uri => {
+    const stat = await vscode.workspace.fs.stat(uri);
+    if (stat.size > maxFileSize || (!includeTests && /(^|\/)(tests?|benches?)\//.test(uri.path))) return undefined;
     const source = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
     const packageRoot = [...packages.keys()].filter(root => uri.fsPath.startsWith(`${root}${path.sep}`)).sort((a, b) => b.length - a.length)[0];
     const packageInfo = packageRoot ? packages.get(packageRoot) : undefined;
     const classification = classifyPackage(packageInfo?.manifest ?? '', source);
     return { uri: uri.toString(), source, packageName: packageInfo ? manifestName(packageInfo.manifest) : packageName(uri.fsPath), packageKind: classification.kind, packageEvidence: classification.evidence, manifestUri: packageInfo?.uri.toString() };
   }));
+  return results.filter((item): item is RustSourceInput => item !== undefined);
 }
 
 function packageName(filePath: string): string { return path.basename(path.dirname(path.dirname(filePath))) || 'workspace'; }

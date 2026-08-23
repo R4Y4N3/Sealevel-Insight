@@ -15,6 +15,17 @@ await esbuild.build({
   logLevel: 'info',
 });
 
+  await esbuild.build({
+    entryPoints: ['src/cli.ts'],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    outfile: 'dist/cli.js',
+    sourcemap: true,
+    format: 'cjs',
+    logLevel: 'info',
+  });
+
 // Parser WASM resources must ship inside the VSIX.
 copyFileSync('resources/parsers/tree-sitter-rust.wasm', 'dist/tree-sitter-rust.wasm');
 copyFileSync('node_modules/web-tree-sitter/tree-sitter.wasm', 'dist/tree-sitter.wasm');

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Added a shared offline CLI for analysis, scope, and report diff workflows.
+- Added versioned report metadata, semantic coverage, scope hashing, and portable serialization.
+- Added native Explorer, CodeLens, hover support, exact AST call-site reporting, and self-contained packaging verification.
+- Added public-project documentation, CI, support policy, and third-party notices.
+
 ## 0.3.0
 
 - Improved Tree-sitter runtime packaging and parser resource resolution.

@@ -2,7 +2,8 @@
   "name": "sealevel-insight",
   "displayName": "Sealevel Insight",
   "description": "Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.",
-  "version": "0.3.0",
+  "bin": { "sealevel-insight": "./dist/cli.js" },
+  "version": "0.4.0",
   "publisher": "sealevel-insight",
   "license": "MIT",
   "repository": {
@@ -27,11 +28,15 @@
     "security",
     "audit",
     "rust",
-    "metrics"
+    "metrics",
+    "architecture",
+    "code-analysis",
+    "audit-scoping"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "views": { "explorer": [{ "id": "sealevelInsightExplorer", "name": "Sealevel Insight", "when": "workspaceFolderCount > 0" }] },
     "commands": [
       {
         "command": "sealevelInsight.analyzeWorkspace",
@@ -61,7 +66,12 @@
           "items": { "type": "string" },
           "default": ["**/.git/**", "**/target/**", "**/node_modules/**", "**/.anchor/**", "**/dist/**", "**/dist-test/**"],
           "description": "Glob patterns excluded from workspace analysis."
-        }
+        },
+        "sealevelInsight.showCodeLens": { "type": "boolean", "default": true, "description": "Show CodeLens above recognized instruction handlers." },
+        "sealevelInsight.maxFileSize": { "type": "number", "default": 5242880, "description": "Maximum file size in bytes analyzed." },
+        "sealevelInsight.autoAnalyze": { "type": "boolean", "default": false, "description": "Re-analyze after saved Rust changes." },
+        "sealevelInsight.includeTests": { "type": "boolean", "default": false, "description": "Include test source files in analysis." },
+        "sealevelInsight.enableIdlAnalysis": { "type": "boolean", "default": false, "description": "Enable IDL discovery when supported." }
       }
     }
   },
@@ -72,7 +82,9 @@
     "build": "node esbuild.mjs",
     "build:test": "tsc -p tsconfig.test.json",
     "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.3.0.vsix"
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.4.0.vsix",
+    "verify:vsix": "node scripts/verify-vsix.js",
+    "cli": "node dist/cli.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

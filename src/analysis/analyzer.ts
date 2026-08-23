@@ -28,11 +28,12 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   const list = [...programs.values()];
   const allSurface = list.map(program => program.securitySurface);
   return {
-    schemaVersion: '0.3.0', tool: { name: 'Sealevel Insight', version: '0.3.0' },
+    schemaVersion: '0.4.0', tool: { name: 'Sealevel Insight', version: '0.4.0' },
     generatedAt: new Date().toISOString(),
     programs: list,
     files,
     diagnostics,
+    coverage: coverageFor(list, files),
     summary: {
       rustFiles: files.length, loc: sum(files, 'lines'), codeLoc: sum(files, 'codeLines'), blankLines: sum(files, 'blankLines'), commentLines: sum(files, 'commentLines'),
       functions: list.reduce((n, p) => n + p.functions.length, 0), instructions: list.reduce((n, p) => n + p.instructions.length, 0), accounts: list.reduce((n, p) => n + p.accounts.length, 0),
@@ -145,6 +146,14 @@ function contextTypeFromFunction(source: string): string | undefined {
 }
 function sum(files: FileMetric[], key: 'lines' | 'codeLines' | 'blankLines' | 'commentLines'): number { return files.reduce((total, file) => total + file[key], 0); }
 function sumSurface(surfaces: SecuritySurface[], key: keyof SecuritySurface, array = false): number { return surfaces.reduce((total, surface) => total + (array ? (surface[key] as unknown[]).length : surface[key] as number), 0); }
+
+function coverageFor(programs: ProgramUnit[], files: FileMetric[]) {
+  const totalInstructions = programs.reduce((sum, program) => sum + program.instructions.length, 0);
+  const totalCpis = programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.length, 0);
+  const totalPdas = programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.length, 0);
+  const ratio = (resolved: number, total: number) => ({ resolved, total, percent: total ? resolved / total : 1 });
+  return { parsedFiles: ratio(files.filter(file => !file.parseError).length, files.length), instructionContexts: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(instruction => !!instruction.contextType).length, 0), totalInstructions), cpiTargets: ratio(programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.filter(site => !!site.target).length, 0), totalCpis), pdaSeeds: ratio(programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.filter(site => !!site.seeds?.length).length, 0), totalPdas) };
+}
 
 function dedupeEvidence(items: import('../model/report').FrameworkEvidence[]): import('../model/report').FrameworkEvidence[] {
   const byFramework = new Map<string, import('../model/report').FrameworkEvidence>();

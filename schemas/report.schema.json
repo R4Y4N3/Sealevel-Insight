@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sealevel Insight Report",
+  "type": "object",
+  "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "tool": { "type": "object", "required": ["name", "version"], "properties": { "name": { "const": "Sealevel Insight" }, "version": { "type": "string" } } },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "programs": { "type": "array" },
+    "files": { "type": "array" },
+    "diagnostics": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "object" }
+  }
+}

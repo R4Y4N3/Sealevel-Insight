@@ -10,17 +10,17 @@ export interface ParsedRustFile {
 
 let initialized: Promise<Language> | undefined;
 
-export async function loadRustLanguage(wasmPath: string): Promise<Language> {
+export async function loadRustLanguage(wasmPath: string, runtimeWasmPath?: string): Promise<Language> {
   initialized ??= (async () => {
-    await Parser.init({ locateFile: (scriptName: string, directory: string) => path.join(directory, scriptName) });
+    await Parser.init({ locateFile: (scriptName: string, directory: string) => runtimeWasmPath ?? path.join(directory, scriptName) });
     return Language.load(wasmPath);
   })();
   return initialized;
 }
 
-export async function parseRust(uri: string, source: string, wasmPath: string): Promise<ParsedRustFile> {
+export async function parseRust(uri: string, source: string, wasmPath: string, runtimeWasmPath?: string): Promise<ParsedRustFile> {
   try {
-    const language = await loadRustLanguage(wasmPath);
+    const language = await loadRustLanguage(wasmPath, runtimeWasmPath);
     const parser = new Parser();
     parser.setLanguage(language);
     const tree = parser.parse(source);

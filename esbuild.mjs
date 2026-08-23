@@ -17,4 +17,5 @@ await esbuild.build({
 
 // Parser WASM resources must ship inside the VSIX.
 copyFileSync('resources/parsers/tree-sitter-rust.wasm', 'dist/tree-sitter-rust.wasm');
-console.log('copied resources/parsers/tree-sitter-rust.wasm -> dist/');
+copyFileSync('node_modules/web-tree-sitter/tree-sitter.wasm', 'dist/tree-sitter.wasm');
+console.log('copied parser runtime and Rust grammar WASM -> dist/');

@@ -1,21 +1,90 @@
 # Sealevel Insight
 
-Sealevel Insight is a local, framework-agnostic VS Code extension for architecture, metrics, and security-surface analysis of Solana Rust programs.
+Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.
 
-## v0.1
+## What it does
 
-The MVP discovers Rust sources, parses them with Tree-sitter Rust, groups analysis per package, and reports Rust metrics, function source-level complexity, Solana instruction/account signals, PDA and CPI sites, and review-surface signals. Anchor, Pinocchio, and native Solana patterns have optional enrichers. Unknown frameworks still receive generic Rust and Solana analysis.
+Sealevel Insight runs locally in VS Code. It parses Rust with Tree-sitter and reports Rust LOC and source-level complexity, detected instructions, account usage and constraints, PDA derivations, CPI sites, framework evidence, architecture relationships, and Review Surface signals. Report rows with source locations can open the corresponding Rust source. The complete report can be exported as portable JSON.
 
-Security Surface and Review Signals are evidence for human review, not vulnerability findings or exploitability conclusions.
+Review Surface signals are evidence for human review, not vulnerability findings.
 
-Complexity is deliberately approximate: `1 + decision points`, counting `if`, loop expressions, match arms, and boolean `&&`/`||` expressions found in a function's syntax tree.
+## Supported styles
 
-## Run locally
+The core model does not depend on Anchor, Pinocchio, or any single Solana SDK. Optional enrichers currently recognize common patterns from:
 
-Run `npm install`, then `npm run typecheck`, `npm test`, and `npm run build`. Press `F5` in VS Code to launch the Extension Development Host, open a Rust workspace, and run **Sealevel Insight: Analyze Workspace** from the Command Palette.
+- Anchor
+- native Solana programs, including modular SDK imports
+- Pinocchio
 
-Build a local VSIX with `npm run package`.
+Unknown/custom frameworks still receive generic Rust and Solana analysis.
 
-## Limitations
+## How it works
 
-This release has no vulnerability scanner, AI, RPC or deployed-binary analysis, IDL reverse engineering, interprocedural data flow, call graph, graph visualization, or compiler/plugin integration. Dynamic targets and framework semantics are reported only when supported by direct syntax evidence.
+```text
+Rust source
+    ↓
+Tree-sitter AST
+    ↓
+Generic Solana semantic model
+    ↓
+Optional framework enrichers
+    ↓
+Metrics / architecture / review surface
+    ↓
+VS Code report
+```
+
+## Screenshots
+
+Screenshots will be added after manual Extension Development Host testing. No screenshots are included yet.
+
+## Commands
+
+- **Sealevel Insight: Analyze Workspace** discovers Cargo packages and analyzes Rust sources.
+- **Sealevel Insight: Export Analysis as JSON** writes the latest report to a selected file.
+
+## Metrics
+
+LOC counts physical source lines. nSLOC counts lines containing code outside comments and whitespace. Blank and comment lines are tracked separately. Complexity is source-level `1 + decision points`, including `if`, loops, match arms, and boolean decision operators; it is an approximation, not compiler control-flow complexity. Account, CPI, and PDA counts are based on AST and explicit syntax evidence.
+
+Review Surface includes raw or unchecked account use, signer/writable/owner/address checks, remaining accounts, unsafe code, serialization, reallocations, CPIs, and PDA derivations. Review Surface signals are not vulnerability findings and do not include severity or exploitability conclusions.
+
+## Installation
+
+### Development
+
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+```
+
+Press `F5` in VS Code to launch the Extension Development Host, open a Rust workspace, and run the analyze command.
+
+### VSIX
+
+```bash
+npm run package
+code --install-extension sealevel-insight-0.3.0.vsix
+```
+
+## Architecture
+
+Discovery and VS Code UI are separate from the analysis engine. Cargo metadata is used for package identity and classification. Tree-sitter produces the reusable Rust AST; generic extraction produces the unified model; optional adapters add framework evidence and constraints. Reports are deterministic in structure, contain stable semantic IDs, and retain locations for navigation.
+
+## Current limitations
+
+The project does not yet perform vulnerability detection, severity assessment, exploitability analysis, RPC or on-chain inspection, binary analysis, IDL reverse engineering, compiler/plugin integration, or full interprocedural data flow and call-graph analysis. Cargo workspace member expansion and some framework-generated semantics remain conservative. Dynamic CPI targets are not guessed.
+
+## Roadmap
+
+Likely future work includes richer framework adapters, more precise CPI/account graph visualization, a CLI and CI report mode, deployed program and IDL analysis, and optional security detectors in a later release.
+
+## Contributing
+
+Keep analysis framework-neutral, prefer AST evidence over substring heuristics, add focused synthetic fixtures for semantic changes, and run the full validation commands before opening a change.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

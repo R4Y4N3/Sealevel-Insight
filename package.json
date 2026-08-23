@@ -2,13 +2,15 @@
   "name": "sealevel-insight",
   "displayName": "Sealevel Insight",
   "description": "Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "sealevel-insight",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/R4Y4N3/Sealevel-Insight"
   },
+  "bugs": { "url": "https://github.com/R4Y4N3/Sealevel-Insight/issues" },
+  "homepage": "https://github.com/R4Y4N3/Sealevel-Insight#readme",
   "engines": {
     "vscode": "^1.90.0",
     "node": ">=18"
@@ -35,8 +37,7 @@
         "command": "sealevelInsight.analyzeWorkspace",
         "title": "Sealevel Insight: Analyze Workspace",
         "category": "Sealevel Insight"
-      }
-      ,{
+      }, {
         "command": "sealevelInsight.exportJson",
         "title": "Sealevel Insight: Export Analysis as JSON",
         "category": "Sealevel Insight"
@@ -51,21 +52,27 @@
             "type": "string"
           },
           "default": [
-            "**/*.rs",
-            "**/Cargo.toml"
+            "**/*.rs"
           ],
           "description": "Glob patterns used to discover Rust sources and Cargo manifests."
+        },
+        "sealevelInsight.excludePatterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["**/.git/**", "**/target/**", "**/node_modules/**", "**/.anchor/**", "**/dist/**", "**/dist-test/**"],
+          "description": "Glob patterns excluded from workspace analysis."
         }
       }
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "npm run build:test && mocha dist-test/**/*.test.js",
+    "test": "npm run test:wasm && npm run build:test && mocha dist-test/**/*.test.js",
+    "test:wasm": "node scripts/smoke-wasm.js",
     "build": "node esbuild.mjs",
     "build:test": "tsc -p tsconfig.test.json",
     "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.2.0.vsix"
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.3.0.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

@@ -41,11 +41,13 @@ export interface FunctionMetric {
   complexity: number;
   parameters: number;
   isPublic: boolean;
+  visibility?: string;
   isUnsafe: boolean;
   program?: string;
 }
 
 export interface InstructionInfo {
+  id?: string;
   name: string;
   location: SourceLocation;
   confidence: number;
@@ -61,6 +63,7 @@ export interface AccountInfo {
   signer?: boolean;
   writable?: boolean;
   unchecked?: boolean;
+  contextType?: string;
   constraints?: AccountConstraint[];
   location: SourceLocation;
   evidence: Evidence[];
@@ -85,6 +88,7 @@ export interface CpiSite {
   functionName?: string;
   enclosingInstruction?: string;
   target?: string;
+  targetKind?: 'system-program' | 'spl-token' | 'token-2022' | 'associated-token' | 'custom' | 'dynamic' | 'unknown';
   invocationApi?: string;
   pdaSigned: boolean;
   evidence: Evidence[];
@@ -149,6 +153,8 @@ export interface ProgramUnit {
 }
 
 export interface WorkspaceReport {
+  schemaVersion: string;
+  tool: { name: string; version: string };
   generatedAt: string;
   programs: ProgramUnit[];
   files: FileMetric[];

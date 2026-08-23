@@ -4,6 +4,10 @@ test/**
 dist-test/**
 node_modules/**
 *.tsbuildinfo
-README.md
+.git/**
+.github/**
+*.vsix
+!README.md
+!CHANGELOG.md
+!LICENSE
 !dist/**
-!dist/tree-sitter-rust.wasm

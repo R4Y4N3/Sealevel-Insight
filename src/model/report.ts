@@ -118,6 +118,41 @@ export interface SecuritySurface {
 
 export type PackageKind = 'solana-program' | 'program-library' | 'library' | 'client' | 'test' | 'build-tool' | 'generated' | 'unknown';
 
+export interface CargoDependency {
+  name: string;
+  packageName?: string;
+  version?: string;
+  path?: string;
+  optional: boolean;
+  kind: 'normal' | 'dev' | 'build';
+  internalPackageId?: string;
+  evidence: Evidence[];
+}
+
+export interface CargoPackage {
+  id: string;
+  name: string;
+  manifestUri: string;
+  rootUri: string;
+  kind: PackageKind;
+  confidence: number;
+  evidence: Evidence[];
+  dependencies: CargoDependency[];
+}
+
+export interface CargoWorkspace {
+  rootUri: string;
+  manifestUri: string;
+  members: string[];
+  excluded: string[];
+}
+
+export interface WorkspaceGraph {
+  workspaces: CargoWorkspace[];
+  packages: CargoPackage[];
+  dependencyEdges: Array<{ source: string; target: string; kind: 'internal' | 'external' }>;
+}
+
 export interface ProgramIdentity {
   programId?: string;
   sources: Evidence[];
@@ -170,6 +205,9 @@ export interface ProgramUnit {
   rootUri?: string;
   packageKind?: PackageKind;
   packageEvidence?: Evidence[];
+  packageId?: string;
+  packageConfidence?: number;
+  packageDependencies?: CargoDependency[];
   identity?: ProgramIdentity;
   rustFiles: FileMetric[];
   functions: FunctionMetric[];
@@ -181,6 +219,7 @@ export interface ProgramUnit {
   architecture?: { nodes: ArchitectureNode[]; edges: ArchitectureEdge[] };
   capabilities?: Capability[];
   reviewHotspots?: ReviewHotspot[];
+  callGraph?: CallGraph;
 }
 
 export interface WorkspaceReport {
@@ -193,6 +232,8 @@ export interface WorkspaceReport {
   diagnostics: string[];
   coverage?: SemanticCoverage;
   reviewProfile?: ReviewHotspot[];
+  workspaceGraph?: WorkspaceGraph;
+  idl?: IdlReport;
   summary: {
     rustFiles: number;
     loc: number;
@@ -211,3 +252,10 @@ export interface WorkspaceReport {
     unsafeBlocks: number;
   };
 }
+
+export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; location: SourceLocation; evidence: Evidence[]; }
+export interface CallGraph { symbols: string[]; calls: CallSite[]; edges: Array<{ source: string; target: string; confidence: number }>; }
+export interface IdlInstruction { name: string; accounts: Array<{ name: string; signer?: boolean; writable?: boolean }>; }
+export interface IdlProgram { address?: string; instructions: IdlInstruction[]; sourceUri?: string; }
+export interface IdlReconciliation { status: 'MATCHED' | 'SOURCE_ONLY' | 'IDL_ONLY' | 'MISMATCH' | 'UNKNOWN'; item: string; details?: string; }
+export interface IdlReport { programs: IdlProgram[]; reconciliations: IdlReconciliation[]; diagnostics: string[]; }

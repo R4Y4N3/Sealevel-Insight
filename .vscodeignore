@@ -7,8 +7,13 @@ node_modules/**
 .git/**
 .github/**
 *.vsix
+.gitignore
+**/*.map
+esbuild.mjs
+tsconfig*.json
+scripts/**
+resources/**
 !README.md
 !CHANGELOG.md
 !LICENSE
 !THIRD_PARTY_NOTICES.md
-!dist/**

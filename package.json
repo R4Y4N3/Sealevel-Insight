@@ -2,15 +2,19 @@
   "name": "sealevel-insight",
   "displayName": "Sealevel Insight",
   "description": "Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.",
-  "bin": { "sealevel-insight": "./dist/cli.js" },
-  "version": "0.4.0",
+  "bin": {
+    "sealevel-insight": "./dist/cli.js"
+  },
+  "version": "0.5.0",
   "publisher": "sealevel-insight",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/R4Y4N3/Sealevel-Insight"
   },
-  "bugs": { "url": "https://github.com/R4Y4N3/Sealevel-Insight/issues" },
+  "bugs": {
+    "url": "https://github.com/R4Y4N3/Sealevel-Insight/issues"
+  },
   "homepage": "https://github.com/R4Y4N3/Sealevel-Insight#readme",
   "engines": {
     "vscode": "^1.90.0",
@@ -36,13 +40,22 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
-    "views": { "explorer": [{ "id": "sealevelInsightExplorer", "name": "Sealevel Insight", "when": "workspaceFolderCount > 0" }] },
+    "views": {
+      "explorer": [
+        {
+          "id": "sealevelInsightExplorer",
+          "name": "Sealevel Insight",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "sealevelInsight.analyzeWorkspace",
         "title": "Sealevel Insight: Analyze Workspace",
         "category": "Sealevel Insight"
-      }, {
+      },
+      {
         "command": "sealevelInsight.exportJson",
         "title": "Sealevel Insight: Export Analysis as JSON",
         "category": "Sealevel Insight"
@@ -63,15 +76,44 @@
         },
         "sealevelInsight.excludePatterns": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["**/.git/**", "**/target/**", "**/node_modules/**", "**/.anchor/**", "**/dist/**", "**/dist-test/**"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.git/**",
+            "**/target/**",
+            "**/node_modules/**",
+            "**/.anchor/**",
+            "**/dist/**",
+            "**/dist-test/**"
+          ],
           "description": "Glob patterns excluded from workspace analysis."
         },
-        "sealevelInsight.showCodeLens": { "type": "boolean", "default": true, "description": "Show CodeLens above recognized instruction handlers." },
-        "sealevelInsight.maxFileSize": { "type": "number", "default": 5242880, "description": "Maximum file size in bytes analyzed." },
-        "sealevelInsight.autoAnalyze": { "type": "boolean", "default": false, "description": "Re-analyze after saved Rust changes." },
-        "sealevelInsight.includeTests": { "type": "boolean", "default": false, "description": "Include test source files in analysis." },
-        "sealevelInsight.enableIdlAnalysis": { "type": "boolean", "default": false, "description": "Enable IDL discovery when supported." }
+        "sealevelInsight.showCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens above recognized instruction handlers."
+        },
+        "sealevelInsight.maxFileSize": {
+          "type": "number",
+          "default": 5242880,
+          "description": "Maximum file size in bytes analyzed."
+        },
+        "sealevelInsight.autoAnalyze": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-analyze after saved Rust changes."
+        },
+        "sealevelInsight.includeTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include test source files in analysis."
+        },
+        "sealevelInsight.enableIdlAnalysis": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable IDL discovery when supported."
+        }
       }
     }
   },
@@ -82,9 +124,11 @@
     "build": "node esbuild.mjs",
     "build:test": "tsc -p tsconfig.test.json",
     "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.4.0.vsix",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.5.0.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
-    "cli": "node dist/cli.js"
+    "cli": "node dist/cli.js",
+    "test:integration": "npm run build && npm run package && npm run verify:vsix",
+    "test:real-world": "node scripts/real-world-smoke.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -102,5 +146,8 @@
   "allowScripts": {
     "@vscode/vsce-sign@2.1.0": true,
     "keytar@7.9.0": true
+  },
+  "dependencies": {
+    "@iarna/toml": "^3.0.0"
   }
 }

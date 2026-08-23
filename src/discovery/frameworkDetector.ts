@@ -15,6 +15,8 @@ export function detectFramework(source: string, uri: string): FrameworkEvidence[
   add('anchor', 0.98, ['anchor-lang', '#[program]', '#[derive(Accounts)]']);
   add('pinocchio', 0.95, ['pinocchio', 'AccountView', 'pinocchio::program_entrypoint']);
   add('native-solana', 0.9, ['solana_program', 'solana-program', 'entrypoint!', 'process_instruction']);
+  add('steel', 0.8, ['steel', 'account!', 'instruction!']);
+  add('quasar', 0.78, ['quasar-lang', 'quasar-spl', 'quasar::']);
   if (!evidence.length && /(invoke|AccountInfo|process_instruction|entrypoint)/.test(source)) {
     const index = source.search(/entrypoint|AccountInfo|process_instruction/);
     const before = source.slice(0, index).split(/\r?\n/);

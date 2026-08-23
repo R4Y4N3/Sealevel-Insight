@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
   "properties": {
-    "schemaVersion": { "type": "string" },
+    "schemaVersion": { "const": "0.5.0" },
     "tool": { "type": "object", "required": ["name", "version"], "properties": { "name": { "const": "Sealevel Insight" }, "version": { "type": "string" } } },
     "generatedAt": { "type": "string", "format": "date-time" },
     "programs": { "type": "array" },

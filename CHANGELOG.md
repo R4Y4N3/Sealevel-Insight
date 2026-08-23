@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Added TOML-backed Cargo workspace and dependency graph primitives.
+- Added Steel and Quasar additive evidence adapters.
+- Added conservative call graph and IDL normalization/reconciliation primitives.
+- Added semantic regression coverage and package/release validation hooks.
+
 ## 0.4.0
 
 - Added a shared offline CLI for analysis, scope, and report diff workflows.

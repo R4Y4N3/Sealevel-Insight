@@ -4,6 +4,12 @@ import * as path from 'node:path';
 import { analyzeSources } from '../../src/analysis/analyzer';
 import { classifyPackage } from '../../src/discovery/cargoDiscovery';
 import { countLines } from '../../src/utils/text';
+import { buildCargoGraph } from '../../src/discovery/cargoGraph';
+import { enrichSteel } from '../../src/adapters/steelAdapter';
+import { enrichQuasar } from '../../src/adapters/quasarAdapter';
+import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
+import { parseRust } from '../../src/parser/rustParser';
+import { buildCallGraph } from '../../src/analysis/callGraph';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -87,5 +93,38 @@ describe('Sealevel Insight analyzer', () => {
     const counts = countLines(source);
     assert.equal(counts.commentLines, 4);
     assert.equal(counts.codeLines, 4);
+  });
+
+  it('resolves Cargo workspace members, path dependencies, and exclusions', () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["programs/*","libs/state"]\nexclude=["libs/ignored"]' },
+      { uri: '/repo/programs/vault/Cargo.toml', text: '[package]\nname="vault"\n[dependencies]\nstate={path="../../libs/state"}' },
+      { uri: '/repo/libs/state/Cargo.toml', text: '[package]\nname="state"\n[lib]' },
+      { uri: '/repo/libs/ignored/Cargo.toml', text: '[package]\nname="ignored"\n[lib]' }
+    ], new Map([['/repo/programs/vault', ['entrypoint!(process_instruction)']], ['/repo/libs/state', ['pub struct State;']]]));
+    assert.deepEqual(graph.workspaces[0].members, ['/repo/libs/state', '/repo/programs/vault']);
+    assert.equal(graph.packages.find(pkg => pkg.name === 'vault')?.dependencies[0].internalPackageId, 'cargo:/repo/libs/state');
+    assert.equal(graph.packages.find(pkg => pkg.name === 'state')?.kind, 'library');
+  });
+
+  it('detects Steel and Quasar as additive framework evidence', () => {
+    assert.equal(enrichSteel('use steel; instruction!(Withdraw);').at(0)?.framework, 'steel');
+    assert.equal(enrichQuasar('use quasar_lang::prelude;').at(0)?.framework, 'quasar');
+  });
+
+  it('normalizes and reconciles IDL instructions', () => {
+    const idl = normalizeIdl({ address: '111', instructions: [{ name: 'withdraw', accounts: [{ name: 'authority', isSigner: true }] }] });
+    assert.equal(idl?.instructions[0].accounts[0].signer, true);
+    const result = reconcileIdl({ instructions: [{ name: 'withdraw', location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, confidence: 1, evidence: [] }], identity: { programId: '222', sources: [], conflicts: [] } }, idl!);
+    assert.equal(result.reconciliations[0].status, 'MATCHED');
+    assert.equal(result.reconciliations[1].status, 'MISMATCH');
+  });
+
+  it('resolves only unambiguous direct calls in a call graph', async () => {
+    const parsed = await parseRust('calls.rs', 'fn helper() {} fn handler() { helper(); missing(); }', wasm);
+    const graph = buildCallGraph([{ uri: 'calls.rs', root: parsed.tree!.rootNode }], [{ name: 'helper', location: { uri: 'calls.rs', startLine: 1, startColumn: 0, endLine: 1, endColumn: 12 }, lines: 1, complexity: 1, parameters: 0, isPublic: false, isUnsafe: false }]);
+    assert.equal(graph.calls.length, 2);
+    assert.equal(graph.edges.length, 1);
+    assert.equal(graph.calls.find(call => call.callee === 'missing')?.resolved, false);
   });
 });

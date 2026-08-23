@@ -1,4 +1,4 @@
-import { AccountInfo, ArchitectureEdge, ArchitectureNode, CpiSite, Evidence, FileMetric, FunctionMetric, InstructionInfo, PdaSite, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind } from '../model/report';
+import { AccountInfo, ArchitectureEdge, ArchitectureNode, CpiSite, Evidence, FileMetric, FunctionMetric, InstructionInfo, PdaSite, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
 import { parseRust, ParsedRustFile } from '../parser/rustParser';
 import { descendants, field, nodeText, RustNode } from '../parser/rustAst';
 import { sourceComplexity } from './complexity';
@@ -6,14 +6,18 @@ import { detectFramework } from '../discovery/frameworkDetector';
 import { enrichAnchor } from '../adapters/anchorAdapter';
 import { enrichNative } from '../adapters/nativeAdapter';
 import { enrichPinocchio } from '../adapters/pinocchioAdapter';
+import { enrichSteel } from '../adapters/steelAdapter';
+import { enrichQuasar } from '../adapters/quasarAdapter';
 import { countLines } from '../utils/text';
+import { buildCallGraph } from './callGraph';
 
-export interface RustSourceInput { uri: string; source: string; packageName?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; }
+export interface RustSourceInput { uri: string; source: string; packageName?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
 
 export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string, runtimeWasmPath?: string): Promise<WorkspaceReport> {
   const parsed = await Promise.all(inputs.map(input => parseRust(input.uri, input.source, wasmPath, runtimeWasmPath)));
   const diagnostics = parsed.filter(file => file.error).map(file => `${file.uri}: ${file.error}`);
   const programs = new Map<string, ProgramUnit>();
+  const parsedByPackage = new Map<string, Array<{ uri: string; root: RustNode }>>();
   const files: FileMetric[] = [];
   parsed.forEach((file, index) => {
     const input = inputs[index];
@@ -23,16 +27,19 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     const program = programs.get(name) ?? emptyProgram(name, input.manifestUri, input.packageKind, input.packageEvidence);
     program.rustFiles.push(metric);
     if (file.tree) extract(file, program);
+    if (file.tree) parsedByPackage.set(name, [...(parsedByPackage.get(name) ?? []), { uri: file.uri, root: file.tree.rootNode }]);
     programs.set(name, program);
   });
   const list = [...programs.values()];
+  for (const program of list) program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions);
   const allSurface = list.map(program => program.securitySurface);
   return {
-    schemaVersion: '0.4.0', tool: { name: 'Sealevel Insight', version: '0.4.0' },
+    schemaVersion: '0.5.0', tool: { name: 'Sealevel Insight', version: '0.5.0' },
     generatedAt: new Date().toISOString(),
     programs: list,
     files,
     diagnostics,
+    workspaceGraph: inputs.find(input => input.workspaceGraph)?.workspaceGraph,
     coverage: coverageFor(list, files),
     summary: {
       rustFiles: files.length, loc: sum(files, 'lines'), codeLoc: sum(files, 'codeLines'), blankLines: sum(files, 'blankLines'), commentLines: sum(files, 'commentLines'),
@@ -47,7 +54,7 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   const root = file.tree!.rootNode;
   const source = file.source;
   const uri = file.uri;
-  program.frameworkEvidence = dedupeEvidence([...program.frameworkEvidence, ...detectFramework(source, uri), ...enrichPinocchio(source), ...enrichNative(source)]);
+  program.frameworkEvidence = dedupeEvidence([...program.frameworkEvidence, ...detectFramework(source, uri), ...enrichPinocchio(source), ...enrichNative(source), ...enrichSteel(source), ...enrichQuasar(source)]);
   const anchor = enrichAnchor(root, uri);
   program.instructions.push(...anchor.instructions);
     program.accounts.push(...anchor.accounts);

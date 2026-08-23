@@ -1,4 +1,4 @@
-# Sealevel Insight
+# Sealevel Insight v0.5
 
 Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.
 
@@ -30,7 +30,7 @@ npm run typecheck
 npm test
 npm run build
 npm run package
-code --install-extension sealevel-insight-0.4.0.vsix
+code --install-extension sealevel-insight-0.5.0.vsix
 ```
 
 In the Extension Development Host, open a Rust workspace and run **Sealevel Insight: Analyze Workspace**.
@@ -59,8 +59,8 @@ The CLI and VS Code command share the same analysis engine. The CLI does not req
 | Anchor | Enriched: program handlers, contexts, account fields, constraints, CPIs, PDAs |
 | Native Rust | Enriched generic entrypoints, account signals, calls, CPIs, and PDAs |
 | Pinocchio | Partial enrichment for common AccountView, entrypoint, CPI, and PDA patterns |
-| Steel | Generic Rust fallback; dedicated adapter is future work |
-| Quasar | Generic Rust fallback; dedicated adapter is future work |
+| Steel | Partial evidence enrichment for common macros and entrypoints |
+| Quasar | Partial evidence enrichment for common crate patterns |
 | Custom Rust | Generic AST-first Rust and Solana analysis |
 | Codama/Shank | No dedicated metadata adapter yet |
 | Solang | Not yet parsed; files are ignored by the Rust adapter |
@@ -98,7 +98,7 @@ Scope analysis hashes normalized file contents with SHA-256, records in-scope an
 
 ## Graphs and IDL
 
-The current architecture graph records evidence-backed program, instruction, account, PDA, and external-program relationships. The report also exposes graph data for future call/CPI/account visualizations. IDL discovery and source-to-IDL reconciliation are not yet implemented.
+The current architecture graph records evidence-backed program, instruction, account, PDA, and external-program relationships. The report also exposes conservative direct-call graph and IDL normalization/reconciliation data. Full workspace IDL discovery and reachable-surface propagation remain future work.
 
 ## Configuration
 
@@ -106,7 +106,7 @@ Implemented settings include `sealevelInsight.includePatterns`, `excludePatterns
 
 ## Privacy and limitations
 
-Analysis is local and deterministic. There is no telemetry, source upload, remote API, RPC, or AI integration. There is no vulnerability detector, severity system, deployed-binary analysis, IDL reconciliation, complete Cargo workspace resolver, full interprocedural call graph, Solang parser, sBPF parser, Steel adapter, Quasar adapter, or Marketplace publication automation.
+Analysis is local and deterministic. There is no telemetry, source upload, remote API, RPC, or AI integration. There is no vulnerability detector, severity system, deployed-binary analysis, full IDL discovery/reconciliation workflow, complete Cargo workspace resolver, reachable interprocedural surface propagation, Solang parser, sBPF parser, or Marketplace publication automation.
 
 ## Roadmap
 

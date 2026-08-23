@@ -15,7 +15,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showWarningMessage('Sealevel Insight requires an open workspace.');
       return;
     }
-    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Sealevel Insight: analyzing workspace' }, async progress => {
+    return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Sealevel Insight: analyzing workspace' }, async progress => {
       try {
         progress.report({ message: 'Scanning Rust sources' });
         const sources = await scanWorkspace();
@@ -30,6 +30,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (report.diagnostics.length) output.show(true);
         showReport(context.extensionUri, report);
         context.workspaceState.update('sealevelInsight.lastReport', report);
+        return report;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(message);

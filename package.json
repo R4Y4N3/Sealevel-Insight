@@ -127,13 +127,15 @@
     "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.5.0.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
     "cli": "node dist/cli.js",
-    "test:integration": "npm run build && npm run package && npm run verify:vsix",
+    "build:integration": "tsc -p tsconfig.integration.json",
+    "test:integration": "npm run build && npm run package && npm run verify:vsix && npm run build:integration && node dist-integration/test/integration/runTest.js",
     "test:real-world": "node scripts/real-world-smoke.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.2",
     "mocha": "^11.7.5",

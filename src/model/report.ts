@@ -45,6 +45,11 @@ export interface FunctionMetric {
   visibility?: string;
   isUnsafe: boolean;
   program?: string;
+  qualifiedName?: string;
+  directCalls?: string[];
+  reachableFunctions?: string[];
+  cpiCount?: number;
+  pdaCount?: number;
 }
 
 export interface InstructionInfo {
@@ -55,6 +60,14 @@ export interface InstructionInfo {
   evidence: Evidence[];
   functionName?: string;
   contextType?: string;
+  handler?: string;
+  reachableSurface?: {
+    functions: string[];
+    accounts: string[];
+    cpis: string[];
+    pdas: string[];
+    externalPrograms: string[];
+  };
 }
 
 export interface AccountInfo {
@@ -114,6 +127,19 @@ export interface SecuritySurface {
   unsafeFunctions: number;
   cpiSites: CpiSite[];
   pdaSites: PdaSite[];
+}
+
+export interface ExternalProgram {
+  id: string;
+  name: string;
+  programId?: string;
+  kind: string;
+  locations: SourceLocation[];
+  calledByInstructions: string[];
+  cpiCount: number;
+  signedCpiCount: number;
+  confidence: number;
+  evidence: Evidence[];
 }
 
 export type PackageKind = 'solana-program' | 'program-library' | 'library' | 'client' | 'test' | 'build-tool' | 'generated' | 'unknown';
@@ -220,6 +246,7 @@ export interface ProgramUnit {
   capabilities?: Capability[];
   reviewHotspots?: ReviewHotspot[];
   callGraph?: CallGraph;
+  externalPrograms?: ExternalProgram[];
 }
 
 export interface WorkspaceReport {

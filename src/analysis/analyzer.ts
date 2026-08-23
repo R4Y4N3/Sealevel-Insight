@@ -8,6 +8,8 @@ import { enrichNative } from '../adapters/nativeAdapter';
 import { enrichPinocchio } from '../adapters/pinocchioAdapter';
 import { enrichSteel } from '../adapters/steelAdapter';
 import { enrichQuasar } from '../adapters/quasarAdapter';
+import { enrichSteelSemantics } from '../adapters/steelAdapter';
+import { enrichQuasarSemantics } from '../adapters/quasarAdapter';
 import { countLines } from '../utils/text';
 import { buildCallGraph } from './callGraph';
 
@@ -31,7 +33,10 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     programs.set(name, program);
   });
   const list = [...programs.values()];
-  for (const program of list) program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions);
+  for (const program of list) {
+    program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions);
+    propagateReachableSurface(program);
+  }
   const allSurface = list.map(program => program.securitySurface);
   return {
     schemaVersion: '0.5.0', tool: { name: 'Sealevel Insight', version: '0.5.0' },
@@ -58,6 +63,10 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   const anchor = enrichAnchor(root, uri);
   program.instructions.push(...anchor.instructions);
     program.accounts.push(...anchor.accounts);
+  const steel = enrichSteelSemantics(root, uri);
+  const quasar = enrichQuasarSemantics(root, uri);
+  program.instructions.push(...steel.instructions, ...quasar.instructions);
+  program.accounts.push(...steel.accounts, ...quasar.accounts);
     for (const account of anchor.accounts) {
       const seeds = account.constraints?.filter(constraint => constraint.kind === 'seeds').map(constraint => constraint.expression ?? '');
       if (seeds?.length) program.securitySurface.pdaSites.push({ id: `pda:${account.id}`, location: account.location, seeds, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, enclosingInstruction: anchor.instructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: 'Anchor account seeds constraint', location: account.location }], confidence: 0.95 });
@@ -70,9 +79,10 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     const name = nodeText(field(fn, 'name'));
     const children = fn.children.filter((child): child is RustNode => child !== null);
     const visibility = children.find(child => child.type === 'visibility_modifier')?.text ?? 'private';
-    const metric: FunctionMetric = { name, location: loc(uri, fn), lines: fn.endPosition.row - fn.startPosition.row + 1, complexity: sourceComplexity(fn), parameters: descendants(fn, 'parameter').length, isPublic: visibility.startsWith('pub'), visibility, isUnsafe: children.some(child => child.type === 'function_modifiers' && child.text.includes('unsafe')) };
+    const metric: FunctionMetric = { name, qualifiedName: `${program.name}::${name}`, location: loc(uri, fn), lines: fn.endPosition.row - fn.startPosition.row + 1, complexity: sourceComplexity(fn), parameters: descendants(fn, 'parameter').length, isPublic: visibility.startsWith('pub'), visibility, isUnsafe: children.some(child => child.type === 'function_modifiers' && child.text.includes('unsafe')) };
     program.functions.push(metric);
-    if (fn.text.includes('process_instruction') || fn.text.includes('entrypoint!')) program.instructions.push({ id: `instruction:${uri}:${name}:${metric.location.startLine}`, name, location: metric.location, confidence: 0.8, evidence: [{ description: 'native/custom entrypoint pattern', location: metric.location }], functionName: name });
+    if (fn.text.includes('process_instruction') || fn.text.includes('entrypoint!')) program.instructions.push({ id: `instruction:${uri}:${name}:${metric.location.startLine}`, name, handler: name, location: metric.location, confidence: 0.8, evidence: [{ description: 'native/custom entrypoint pattern', location: metric.location }], functionName: name });
+    extractNativeParameters(fn, metric, program);
     extractSites(fn, metric, program, source, uri);
     if (metric.isUnsafe) program.securitySurface.unsafeFunctions++;
     const context = contextTypeFromFunction(fn.text);
@@ -131,6 +141,45 @@ function targetKind(target: string): 'system-program' | 'spl-token' | 'token-202
   if (/token/i.test(target)) return 'spl-token';
   if (/associated/i.test(target)) return 'associated-token';
   return 'custom';
+}
+
+function extractNativeParameters(fn: RustNode, metric: FunctionMetric, program: ProgramUnit): void {
+  if (!/process_instruction|entrypoint|AccountInfo|AccountView/.test(fn.text)) return;
+  for (const parameter of descendants(fn, 'parameter')) {
+    const type = parameter.childForFieldName('type')?.text ?? '';
+    const name = parameter.children.find(child => child?.type === 'identifier')?.text ?? '';
+    if (!/AccountInfo|AccountView/.test(type) || !name) continue;
+    const account: AccountInfo = { id: `account:${metric.location.uri}:parameter:${name}:${metric.location.startLine}`, name, type, location: loc(metric.location.uri, parameter), confidence: 0.8, evidence: [{ description: 'native account parameter', location: loc(metric.location.uri, parameter) }] };
+    program.accounts.push(account);
+    const instruction = program.instructions.find(item => item.functionName === metric.name);
+    if (instruction) { program.relationships ??= []; program.relationships.push({ instructionId: instruction.id ?? instruction.name, accountId: account.id!, relationship: 'unknown' }); }
+  }
+}
+
+function propagateReachableSurface(program: ProgramUnit): void {
+  const graph = program.callGraph;
+  if (!graph) return;
+  const byName = new Map(program.functions.map(fn => [fn.qualifiedName ?? fn.name, fn]));
+  const qualifiedByShortName = new Map(program.functions.map(fn => [fn.name, fn.qualifiedName ?? fn.name]));
+  const edges = new Map<string, string[]>();
+  for (const edge of graph.edges) edges.set(edge.source, [...(edges.get(edge.source) ?? []), edge.target]);
+  for (const instruction of program.instructions) {
+    const handler = qualifiedByShortName.get(instruction.handler ?? instruction.functionName ?? instruction.name) ?? instruction.handler ?? instruction.functionName ?? instruction.name;
+    const functions = new Set<string>();
+    const queue = [handler];
+    while (queue.length) {
+      const current = queue.shift()!;
+      if (functions.has(current)) continue;
+      functions.add(current);
+      queue.push(...(edges.get(current) ?? []).filter(next => !functions.has(next)));
+    }
+    const sites = [...functions].map(name => byName.get(name)).filter((fn): fn is FunctionMetric => !!fn);
+    const cpis = program.securitySurface.cpiSites.filter(site => sites.some(fn => fn.name === site.functionName)).map(site => site.id ?? '');
+    const pdas = program.securitySurface.pdaSites.filter(site => sites.some(fn => fn.name === site.enclosingFunction)).map(site => site.id ?? '');
+    const accountIds = program.relationships?.filter(rel => rel.instructionId === instruction.id).map(rel => rel.accountId) ?? [];
+    instruction.reachableSurface = { functions: [...functions].sort(), accounts: [...new Set(accountIds)].sort(), cpis: [...new Set(cpis)].sort(), pdas: [...new Set(pdas)].sort(), externalPrograms: [] };
+    for (const fn of sites) { fn.reachableFunctions = [...functions].sort(); fn.cpiCount = cpis.length; fn.pdaCount = pdas.length; }
+  }
 }
 
 function emptyProgram(name: string, manifestUri?: string, packageKind: PackageKind = 'unknown', packageEvidence: Evidence[] = []): ProgramUnit {

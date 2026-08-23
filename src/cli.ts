@@ -5,6 +5,9 @@ import { analyzeSources, RustSourceInput } from './analysis/analyzer';
 import { buildScope } from './core/scope';
 import { diffReports } from './core/diff';
 import { markdownReport, portableReport, standaloneHtml } from './core/serialization';
+import { discoverIdls } from './idl/discovery';
+import { reconcileIdl } from './idl/reconciliation';
+import { buildCargoGraph } from './discovery/cargoGraph';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -21,13 +24,24 @@ async function main(): Promise<void> {
   const wasm = path.resolve(__dirname, 'tree-sitter-rust.wasm');
   const runtime = path.resolve(__dirname, 'tree-sitter.wasm');
   const report = portableReport(await analyzeSources(sources, wasm, runtime), root);
+  const idls = await discoverIdls(root);
+  if (idls.length) {
+    report.idl = reconcileIdl(report.programs[0] ?? { instructions: [] }, idls[0]);
+    report.idl.programs = idls;
+  }
   if (report.diagnostics.length && args.includes('--fail-on-analysis-error')) process.exitCode = 1;
   await output(report, format, option(args, '--output'));
 }
 
 async function rustSources(root: string): Promise<RustSourceInput[]> {
   const files = await collect(root);
-  return Promise.all(files.filter(file => file.endsWith('.rs')).map(async file => ({ uri: `file://${file}`, source: await readFile(file, 'utf8'), packageName: path.basename(path.dirname(path.dirname(file))) })));
+  const rustFiles = files.filter(file => file.endsWith('.rs'));
+  const manifestFiles = files.filter(file => path.basename(file) === 'Cargo.toml');
+  const manifests = await Promise.all(manifestFiles.map(async file => ({ uri: file, text: await readFile(file, 'utf8') })));
+  const sourceByDirectory = new Map<string, string[]>();
+  for (const file of rustFiles) { const directory = manifestFiles.map(manifest => path.dirname(manifest)).filter(directory => file.startsWith(`${directory}${path.sep}`)).sort((a, b) => b.length - a.length)[0]; if (directory) sourceByDirectory.set(directory, [...(sourceByDirectory.get(directory) ?? []), await readFile(file, 'utf8')]); }
+  const workspaceGraph = buildCargoGraph(manifests, sourceByDirectory);
+  return Promise.all(rustFiles.map(async file => { const directory = [...sourceByDirectory.keys()].filter(item => file.startsWith(`${item}${path.sep}`)).sort((a, b) => b.length - a.length)[0]; const pkg = workspaceGraph.packages.find(item => item.rootUri === directory); return { uri: `file://${file}`, source: await readFile(file, 'utf8'), packageName: pkg?.name ?? path.basename(path.dirname(path.dirname(file))), packageKind: pkg?.kind, packageEvidence: pkg?.evidence, manifestUri: pkg?.manifestUri, workspaceGraph }; }));
 }
 async function collect(directory: string): Promise<string[]> {
   const { readdir } = await import('node:fs/promises');

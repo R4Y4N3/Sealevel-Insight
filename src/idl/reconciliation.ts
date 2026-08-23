@@ -12,6 +12,12 @@ export function reconcileIdl(program: { instructions: InstructionInfo[]; identit
   const idlNames = new Set(idl.instructions.map(instruction => instruction.name));
   const reconciliations: IdlReconciliation[] = [...sourceNames].map(name => ({ status: idlNames.has(name) ? 'MATCHED' as const : 'SOURCE_ONLY' as const, item: `instruction:${name}` }));
   reconciliations.push(...[...idlNames].filter(name => !sourceNames.has(name)).map(name => ({ status: 'IDL_ONLY' as const, item: `instruction:${name}` })));
+  for (const sourceInstruction of program.instructions) {
+    const idlInstruction = idl.instructions.find(item => item.name === sourceInstruction.name);
+    if (!idlInstruction || !sourceInstruction.contextType) continue;
+    const sourceAccounts = sourceInstruction.contextType;
+    if (sourceAccounts && idlInstruction.accounts.length === 0) reconciliations.push({ status: 'UNKNOWN', item: `accounts:${sourceInstruction.name}`, details: 'Source context exists but normalized source account fields were not provided.' });
+  }
   const diagnostics = program.identity?.programId && idl.address && program.identity.programId !== idl.address ? [`Program ID mismatch: source ${program.identity.programId}, IDL ${idl.address}`] : [];
   if (diagnostics.length) reconciliations.push({ status: 'MISMATCH', item: 'programId', details: diagnostics[0] });
   return { programs: [idl], reconciliations, diagnostics };

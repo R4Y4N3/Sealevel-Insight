@@ -10,6 +10,7 @@ import { enrichQuasar } from '../../src/adapters/quasarAdapter';
 import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
 import { parseRust } from '../../src/parser/rustParser';
 import { buildCallGraph } from '../../src/analysis/callGraph';
+import { discoverIdls } from '../../src/idl/discovery';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -126,5 +127,48 @@ describe('Sealevel Insight analyzer', () => {
     assert.equal(graph.calls.length, 2);
     assert.equal(graph.edges.length, 1);
     assert.equal(graph.calls.find(call => call.callee === 'missing')?.resolved, false);
+  });
+
+  it('propagates reachable helper surfaces to instructions', async () => {
+    const source = `#[program]\npub mod p { pub fn go() { helper(); } }\nfn helper() { invoke_signed(&[], &[], &[]); }`;
+    const report = await analyzeSources([{ uri: 'reach/lib.rs', source, packageName: 'reach' }], wasm);
+    assert.equal(report.programs[0].instructions[0].reachableSurface?.cpis.length, 1);
+    assert.ok(report.programs[0].instructions[0].reachableSurface?.functions.some(name => name.endsWith('helper')));
+  });
+
+  it('discovers IDL files without invoking external tools', async () => {
+    const idls = await discoverIdls(path.resolve(root, 'fixtures'));
+    assert.equal(idls.length, 1);
+    assert.equal(idls[0].instructions[0].name, 'withdraw');
+  });
+
+  it('keeps native account relationships evidence-backed', async () => {
+    const source = 'pub fn process_instruction(accounts: &[AccountInfo]) { let authority = &accounts[0]; if authority.is_signer { invoke(&[], &[]); } }';
+    const report = await analyzeSources([{ uri: 'native-rel/lib.rs', source, packageName: 'native-rel' }], wasm);
+    assert.equal(report.programs[0].relationships?.length, 1);
+    assert.equal(report.programs[0].relationships?.[0].relationship, 'unknown');
+  });
+
+  it('extracts Pinocchio current-style signals', async () => {
+    const source = 'use pinocchio::account_info::AccountView; pub fn process_entrypoint(accounts: &mut [AccountView]) -> ProgramResult { pinocchio::cpi::invoke_signed(&[], accounts, &[]); }';
+    const report = await analyzeSources([{ uri: 'pinocchio-current/lib.rs', source, packageName: 'pinocchio-current' }], wasm);
+    assert.equal(report.programs[0].frameworkEvidence.some(item => item.framework === 'pinocchio'), true);
+    assert.equal(report.summary.cpis, 1);
+    assert.equal(report.summary.pdaSignedCpis, 1);
+  });
+
+  it('uses semantic Steel and Quasar extraction without aliasing them to Anchor', async () => {
+    const steel = await analyzeSources([{ uri: 'steel/lib.rs', source: await fixture('steel-basic'), packageName: 'steel' }], wasm);
+    const quasar = await analyzeSources([{ uri: 'quasar/lib.rs', source: await fixture('quasar-basic'), packageName: 'quasar' }], wasm);
+    assert.equal(steel.programs[0].frameworkEvidence.some(item => item.framework === 'steel'), true);
+    assert.equal(quasar.programs[0].frameworkEvidence.some(item => item.framework === 'quasar'), true);
+    assert.equal(quasar.programs[0].instructions.some(item => item.name === 'withdraw'), true);
+  });
+
+  it('propagates workspace dependency graph into report inputs', async () => {
+    const graph = buildCargoGraph([{ uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["program"]' }, { uri: '/repo/program/Cargo.toml', text: '[package]\nname="program"' }], new Map([['/repo/program', ['pub fn handler() {}']]]));
+    const report = await analyzeSources([{ uri: 'program/lib.rs', source: 'pub fn handler() {}', packageName: 'program', workspaceGraph: graph }], wasm);
+    assert.equal(report.workspaceGraph?.packages[0].name, 'program');
+    assert.equal(report.workspaceGraph?.workspaces[0].members[0], '/repo/program');
   });
 });

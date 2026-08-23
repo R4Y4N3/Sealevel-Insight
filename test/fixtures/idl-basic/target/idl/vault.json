@@ -1,0 +1,6 @@
+{
+  "address": "11111111111111111111111111111111",
+  "instructions": [
+    { "name": "withdraw", "accounts": [{ "name": "authority", "isSigner": true, "isMut": true }] }
+  ]
+}

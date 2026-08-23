@@ -2,6 +2,7 @@
 src/**
 test/**
 dist-test/**
+dist-integration/**
 node_modules/**
 *.tsbuildinfo
 .git/**

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { analyzeSources } from './analysis/analyzer';
 import { scanWorkspace } from './discovery/workspaceScanner';
 import { showReport } from './ui/reportPanel';
+import { WorkspaceReport } from './model/report';
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Sealevel Insight');
@@ -20,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
         report.diagnostics.forEach(diagnostic => output.appendLine(diagnostic));
         if (report.diagnostics.length) output.show(true);
         showReport(context.extensionUri, report);
+        context.workspaceState.update('sealevelInsight.lastReport', report);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(message);
@@ -28,7 +30,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     });
   });
-  context.subscriptions.push(output, command);
+  const exportJson = vscode.commands.registerCommand('sealevelInsight.exportJson', async () => {
+    const report = context.workspaceState.get<WorkspaceReport>('sealevelInsight.lastReport');
+    if (!report) { void vscode.window.showInformationMessage('Analyze a workspace before exporting JSON.'); return; }
+    const uri = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'sealevel-insight-report.json'), filters: { JSON: ['json'] } });
+    if (uri) await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(report, null, 2), 'utf8'));
+  });
+  context.subscriptions.push(output, command, exportJson);
 }
 
 export function deactivate(): void { }

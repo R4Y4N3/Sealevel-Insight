@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { analyzeSources } from '../../src/analysis/analyzer';
+import { classifyPackage } from '../../src/discovery/cargoDiscovery';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -18,6 +19,9 @@ describe('Sealevel Insight analyzer', () => {
     assert.ok(report.summary.pdas >= 1 || report.summary.signerSignals >= 1);
     assert.ok(report.programs[0].frameworkEvidence.some(evidence => evidence.framework === 'anchor'));
     assert.equal(report.programs[0].functions[0].location.startLine, 5);
+    assert.ok(report.programs[0].accounts.some(account => account.constraints?.some(constraint => constraint.kind === 'seeds')));
+    assert.ok((report.programs[0].architecture?.edges.length ?? 0) > 0);
+    assert.ok((report.programs[0].relationships?.length ?? 0) > 0);
   });
 
   it('analyzes unknown frameworks through generic Rust metrics', async () => {
@@ -46,5 +50,18 @@ describe('Sealevel Insight analyzer', () => {
     assert.equal(report.programs.length, 2);
     assert.equal(report.summary.functions, 1);
     assert.equal(report.diagnostics.length, 1);
+  });
+
+  it('serializes a deterministic JSON-compatible report', async () => {
+    const report = await analyzeSources([{ uri: 'custom/lib.rs', source: await fixture('custom-basic'), packageName: 'custom' }], wasm);
+    const parsed = JSON.parse(JSON.stringify(report));
+    assert.equal(parsed.programs[0].name, 'custom');
+    assert.equal(typeof parsed.generatedAt, 'string');
+  });
+
+  it('classifies Cargo packages without treating every crate as a program', () => {
+    assert.equal(classifyPackage('[package]\nname="math"\n[lib]', 'pub fn add() {}').kind, 'library');
+    assert.equal(classifyPackage('[dependencies]\nsolana-program="2"', 'entrypoint!(process_instruction);').kind, 'solana-program');
+    assert.equal(classifyPackage('[[test]]\nname="integration_test"', '#[test] fn test() {}').kind, 'test');
   });
 });

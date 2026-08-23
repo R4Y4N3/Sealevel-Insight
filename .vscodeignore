@@ -1,0 +1,9 @@
+.vscode/**
+src/**
+test/**
+dist-test/**
+node_modules/**
+*.tsbuildinfo
+README.md
+!dist/**
+!dist/tree-sitter-rust.wasm

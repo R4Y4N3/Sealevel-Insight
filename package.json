@@ -1,0 +1,82 @@
+{
+  "name": "sealevel-insight",
+  "displayName": "Sealevel Insight",
+  "description": "Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.",
+  "version": "0.1.0",
+  "publisher": "sealevel-insight",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sealevel-insight/sealevel-insight"
+  },
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "solana",
+    "anchor",
+    "pinocchio",
+    "security",
+    "audit",
+    "rust",
+    "metrics"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sealevelInsight.analyzeWorkspace",
+        "title": "Sealevel Insight: Analyze Workspace",
+        "category": "Sealevel Insight"
+      }
+    ],
+    "configuration": {
+      "title": "Sealevel Insight",
+      "properties": {
+        "sealevelInsight.includePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.rs",
+            "**/Cargo.toml"
+          ],
+          "description": "Glob patterns used to discover Rust sources and Cargo manifests."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:test && mocha dist-test/**/*.test.js",
+    "build": "node esbuild.mjs",
+    "build:test": "tsc -p tsconfig.test.json",
+    "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.27.2",
+    "mocha": "^11.7.5",
+    "source-map-support": "^0.5.21",
+    "tree-sitter-cli": "^0.26.12",
+    "tree-sitter-rust": "0.24.0",
+    "typescript": "^5.9.3",
+    "web-tree-sitter": "^0.25.10"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.1.0": true,
+    "keytar@7.9.0": true
+  }
+}

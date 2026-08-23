@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist-test",
+    "sourceMap": false,
+    "noEmit": false
+  },
+  "exclude": ["src/extension.ts", "src/ui/**"]
+}

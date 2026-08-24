@@ -68,12 +68,14 @@ function buildInstructionDossiers(program: ProgramUnit): InstructionDossier[] {
       arguments: [...(instruction.arguments ?? [])], location: instruction.location,
       reachability: {
         complete: surface?.complete ?? false, incompleteReasons: sorted(surface?.incompleteReasons ?? []), functions: sorted(surface?.functions ?? []),
-        unresolvedCalls: sorted(surface?.unresolvedCalls ?? []), ambiguousCalls: sorted(surface?.ambiguousCalls ?? [])
+        unresolvedCalls: sorted(surface?.unresolvedCalls ?? []), ambiguousCalls: sorted(surface?.ambiguousCalls ?? []),
+        unresolvedCallDetails: [...(surface?.unresolvedCallDetails ?? [])].sort((a, b) => a.callId.localeCompare(b.callId))
       },
       accounts, cpis, pdas,
       stateTypeIds: sorted(accounts.flatMap(item => item.stateTypeId ? [item.stateTypeId] : [])),
       externalProgramIds: sorted(surface?.externalPrograms ?? []), sysvarIds: sorted(surface?.sysvars ?? []),
       runtimeOperationIds: sorted(surface?.syscalls ?? []), eventIds: sorted(surface?.events ?? []), errorIds: sorted(surface?.errors ?? []),
+      crossPackageSurfaces: [...(surface?.crossPackageSurfaces ?? [])].sort((a, b) => a.program.localeCompare(b.program)),
       semanticSites: {
         initialization: sorted(surface?.initializationSites ?? []), realloc: sorted(surface?.reallocSites ?? []), close: sorted(surface?.closeSites ?? []),
         serialization: sorted(surface?.serializationSites ?? []), deserialization: sorted(surface?.deserializationSites ?? []),

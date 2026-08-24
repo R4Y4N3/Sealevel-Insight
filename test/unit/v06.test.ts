@@ -11,6 +11,7 @@ import { markdownReport, standaloneHtml } from '../../src/core/serialization';
 import { buildScope } from '../../src/core/scope';
 import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
+import { applyCargoMetadata } from '../../src/discovery/cargoMetadata';
 
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
 
@@ -167,7 +168,68 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const call = report.programs.find(item => item.name === 'client')?.callGraph?.calls.find(item => item.sourceExpression === 'validate');
     assert.equal(call?.status, 'resolved'); assert.equal(call?.target, 'state-lib::validate');
     const surface = report.programs.find(item => item.name === 'client')?.instructions.find(item => item.name === 'run')?.reachableSurface;
-    assert.equal(surface?.complete, false); assert.match(surface?.incompleteReasons?.join('\n') ?? '', /cross-package functions indexed but not merged/);
+    assert.equal(surface?.complete, true); assert.deepEqual(surface?.crossPackageSurfaces?.map(item => [item.program, item.functions]), [['state-lib', ['state-lib::validate']]]);
+  });
+
+  it('uses saved Cargo resolution for workspace dependencies and rejects crate-private targets', async () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["client","helper"]' },
+      { uri: '/repo/client/Cargo.toml', text: '[package]\nname="client"\nversion="1.0.0"\n[dependencies]\nhelper-lib="1"' },
+      { uri: '/repo/helper/Cargo.toml', text: '[package]\nname="helper-lib"\nversion="1.0.0"' }
+    ], new Map([['/repo/client', ['use helper_lib::public;']], ['/repo/helper', ['pub fn public() {}']]]));
+    applyCargoMetadata(graph, { version: 1, workspace_root: '/repo', target_directory: '/repo/target', workspace_members: ['client-id', 'helper-id'], workspace_default_members: ['client-id'], packages: [
+      { id: 'client-id', name: 'client', version: '1.0.0', manifest_path: '/repo/client/Cargo.toml' }, { id: 'helper-id', name: 'helper-lib', version: '1.0.0', manifest_path: '/repo/helper/Cargo.toml' }
+    ], resolve: { root: 'client-id', nodes: [{ id: 'client-id', features: [], deps: [{ name: 'helper_lib', pkg: 'helper-id', dep_kinds: [{ kind: null, target: null }] }] }, { id: 'helper-id', features: [], deps: [] }] } }, '/repo/cargo-metadata.json');
+    const client = graph.packages.find(item => item.name === 'client')!; const helper = graph.packages.find(item => item.name === 'helper-lib')!;
+    const report = await analyzeSources([
+      { uri: 'file:///repo/client/src/lib.rs', source: 'use helper_lib::{public, hidden}; #[program] mod p { pub fn run() { public(); hidden(); } }', packageName: client.name, packageId: client.id, packageRoot: client.rootUri, workspaceGraph: graph },
+      { uri: 'file:///repo/helper/src/lib.rs', source: 'pub fn public() {} pub(crate) fn hidden() {}', packageName: helper.name, packageId: helper.id, packageRoot: helper.rootUri, workspaceGraph: graph }
+    ], wasm);
+    const calls = report.programs.find(item => item.name === 'client')?.callGraph?.calls ?? [];
+    assert.equal(calls.find(item => item.sourceExpression === 'public')?.target, 'helper-lib::public');
+    assert.equal(calls.find(item => item.sourceExpression === 'hidden')?.status, 'unresolved'); assert.match(calls.find(item => item.sourceExpression === 'hidden')?.resolutionReason ?? '', /no externally public indexed function/);
+  });
+
+  it('propagates recursive cross-package functions and CPI semantics', async () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["client","helper"]' },
+      { uri: '/repo/client/Cargo.toml', text: '[package]\nname="client"\n[dependencies]\nhelper-lib={path="../helper"}' },
+      { uri: '/repo/helper/Cargo.toml', text: '[package]\nname="helper-lib"' }
+    ], new Map([['/repo/client', ['use helper_lib::first;']], ['/repo/helper', ['pub fn first() {}']]]));
+    const client = graph.packages.find(item => item.name === 'client')!; const helper = graph.packages.find(item => item.name === 'helper-lib')!;
+    const report = await analyzeSources([
+      { uri: 'file:///repo/client/src/lib.rs', source: 'use helper_lib::first; #[program] mod p { pub fn run() { first(); } }', packageName: 'client', packageId: client.id, packageRoot: client.rootUri, workspaceGraph: graph },
+      { uri: 'file:///repo/helper/src/lib.rs', source: 'use solana_program::program::invoke; pub fn first() { second(); } fn second() { invoke(&[], &[]); }', packageName: 'helper-lib', packageId: helper.id, packageRoot: helper.rootUri, workspaceGraph: graph }
+    ], wasm);
+    const dossier = report.programs.find(item => item.name === 'client')?.instructionDossiers?.[0]!; const cross = dossier.crossPackageSurfaces[0];
+    assert.deepEqual(cross.functions, ['helper-lib::first', 'helper-lib::second']); assert.equal(cross.cpiIds.length, 1); assert.equal(cross.complete, true); assert.equal(dossier.reachability.complete, true);
+    assert.equal(dossier.reviewComplexity?.components.find(item => item.label === 'CPIs')?.value, 1);
+  });
+
+  it('filters known cfg branches and preserves unknown target predicates explicitly', async () => {
+    const graph = buildCargoGraph([{ uri: '/repo/Cargo.toml', text: '[package]\nname="cfg-program"\n[features]\nenabled=[]\noff=[]' }], new Map([['/repo', ['#[program] mod p {}']]]));
+    const pkg = graph.packages[0]; pkg.enabledFeatures = ['enabled'];
+    const source = '#[cfg(feature = "enabled")]\nfn selected() {}\n#[cfg(feature = "off")]\nfn hidden() { invoke(&[], &[]); }\n#[cfg(test)]\nfn test_only() {}\n#[cfg(target_os = "solana")]\nfn target_specific() {}\n#[program]\nmod p { pub fn run() { selected(); target_specific(); } }';
+    const report = await analyzeSources([{ uri: 'file:///repo/src/lib.rs', source, packageName: pkg.name, packageId: pkg.id, packageRoot: pkg.rootUri, workspaceGraph: graph }], wasm);
+    const program = report.programs[0]; assert.deepEqual(program.functions.map(item => item.name).sort(), ['run', 'selected', 'target_specific']);
+    assert.equal(program.conditionalCompilation?.featureKnowledge, 'cargo-metadata'); assert.equal(program.conditionalCompilation?.inactiveItems, 2); assert.equal(program.conditionalCompilation?.unknownItems, 1);
+    assert.deepEqual(program.functions.find(item => item.name === 'target_specific')?.cfgPredicates, ['target_os = "solana"']);
+    const dossier = program.instructionDossiers?.[0]!; assert.equal(dossier.reachability.complete, false); assert.match(dossier.reachability.incompleteReasons.join('\n'), /conditional compilation/); assert.equal(program.securitySurface.cpiSites.length, 0);
+  });
+
+  it('resolves typed inherent and trait method calls without guessing untyped receivers', async () => {
+    const report = await sampleReport('trait Execute { fn execute(&self); } struct Worker; impl Execute for Worker { fn execute(&self) { helper(); } } fn helper() {} fn typed(worker: Worker) { worker.execute(); } fn dynamic(value: Unknown) { value.missing(); }');
+    const calls = report.programs[0].callGraph?.calls ?? []; const typed = calls.find(item => item.sourceExpression === 'worker.execute')!; const dynamic = calls.find(item => item.sourceExpression === 'value.missing')!;
+    assert.equal(typed.status, 'resolved'); assert.equal(typed.target, 'crate::Worker::execute'); assert.equal(typed.receiverType, 'Worker'); assert.match(typed.resolutionReason ?? '', /trait implementation/);
+    assert.equal(dynamic.status, 'unresolved'); assert.equal(dynamic.receiverType, 'Unknown'); assert.match(dynamic.resolutionReason ?? '', /no indexed implementation/);
+  });
+
+  it('keeps ambiguous trait implementations explicit and excludes trait contracts as concrete functions', async () => {
+    const report = await sampleReport('trait First { fn run(&self); } trait Second { fn run(&self); } struct Worker; impl First for Worker { fn run(&self) {} } impl Second for Worker { fn run(&self) {} } fn dispatch(worker: Worker) { worker.run(); }');
+    const program = report.programs[0]; const call = program.callGraph?.calls.find(item => item.sourceExpression === 'worker.run')!;
+    assert.equal(call.status, 'ambiguous'); assert.equal(call.candidateTargets?.length, 2); assert.match(call.resolutionReason ?? '', /multiple indexed inherent\/trait candidates/);
+    assert.equal(program.functions.filter(item => item.name === 'run').length, 2);
+    assert.equal(program.symbols?.filter(item => item.kind === 'trait').length, 2);
   });
 
   it('links Quasar constraints and structured PDA templates across modules', async () => {
@@ -215,7 +277,8 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const report = await sampleReport('use external_crate::helper; fn local() {} fn run(value: Thing) { local(); helper(); drop(value); value.method(); missing(); }');
     assert.deepEqual(report.coverage?.internalCalls, { resolved: 1, total: 1, percent: 1 });
     assert.deepEqual(report.coverage?.externalCalls, { resolved: 2, total: 2, percent: 1 });
-    assert.equal(report.coverage?.dynamicCalls, 1); assert.equal(report.coverage?.unknownCalls, 1);
+    assert.equal(report.coverage?.dynamicCalls, 0); assert.equal(report.coverage?.unknownCalls, 2);
+    const method = report.programs[0].callGraph?.calls.find(item => item.sourceExpression === 'value.method'); assert.equal(method?.receiverType, 'Thing'); assert.match(method?.resolutionReason ?? '', /no indexed implementation/);
   });
 
   it('does not mark instruction reachability incomplete for classified external calls', async () => {

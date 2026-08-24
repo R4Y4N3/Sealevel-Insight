@@ -35,6 +35,9 @@ Exit code `0` means success, `1` means analysis/configuration failure, and `2` m
 - Proper TOML parsing for virtual/nested Cargo workspaces, inherited package/dependency fields, targets, features, target conditions, renamed/path/optional/dev/build dependencies, and diagnostic recovery.
 - Module-aware Rust symbols for modules, functions, methods, types, imports, aliases, globs, and re-exports.
 - Conservative call resolution across files. Ambiguous, external, unresolved, and dynamic calls stay explicit; trait dispatch is not invented.
+- Reachability v2 evaluates Cargo feature/`cfg(test)` predicates when saved Cargo metadata provides the active feature set, excludes proven-inactive semantic items, and preserves target/platform predicates as explicit unknown evidence.
+- Typed method calls resolve to a unique inherent or trait implementation only when the receiver type and indexed implementation make the target unambiguous. Trait declarations and untyped/dynamic receivers are never treated as concrete callees.
+- Resolved internal Cargo dependency calls recursively contribute dependency functions, CPIs, PDA signer use, state/runtime operations, external programs, complexity, and unresolved-call evidence to each instruction dossier.
 - Per-instruction transitive surfaces: functions, accounts, CPIs, signed/dynamic CPIs, PDAs, external programs, state, sysvars, runtime operations, events, errors, unsafe code, mutations, lifecycle sites, complexity, and incompleteness reasons.
 - Framework-neutral account and state models with evidence, location, confidence, validation, access, lifecycle, serialization, PDA, and instruction relationships.
 - Exact AST-backed CPI/PDA sites, structural PDA seeds, signed CPI links, known external-program classification, and deduplicated reachable relationships.
@@ -139,7 +142,7 @@ Core analysis modules do not import `vscode`. Normal execution performs no netwo
 
 Run `npm run typecheck`, `npm test`, `npm run build`, `npm run package`, `npm run verify:vsix`, `npm run test:integration`, `npm run test:real-world`, `npm run benchmark`, `npm audit`, and `git diff --check` before release assessment.
 
-Static analysis cannot resolve arbitrary macros, conditional compilation, trait/dynamic dispatch, runtime-selected program IDs, or all custom serialization. Cross-package calls are conservative and require indexed source plus dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
+Static analysis cannot resolve arbitrary macros, target/platform `cfg` predicates without a compilation target, trait objects/generic dispatch, nontrivial Rust autoderef method lookup, runtime-selected program IDs, or all custom serialization. Feature predicates are authoritative only when the imported Cargo metadata contains the resolved feature set; otherwise they remain unknown. Cross-package calls are conservative and require indexed source plus Cargo dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
 
 Marketplace publishing still requires the repository owner to confirm the real VS Code publisher account and provide screenshots. No publisher is invented, and this repository does not auto-publish.
 

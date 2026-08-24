@@ -2,13 +2,15 @@
 
 ## 0.6.0
 
+- Added Reachability v2: tri-state Cargo feature/`cfg` filtering, evidence-backed typed inherent/trait method resolution, recursive internal-dependency surfaces, and per-call unresolved explanations/candidates.
+- Added cross-package functions, CPIs, signed/dynamic CPIs, PDAs, state/runtime operations, external programs, and completeness evidence to instruction dossiers, reports, diffs, Explorer views, review scoring, schema validation, and invariants.
 - Added complete TOML-backed Cargo workspace/package/target/dependency/feature modeling with recoverable diagnostics.
 - Added module-aware Rust symbols, conservative call resolution, cycle-safe instruction reachability, and explicit ambiguous/unresolved/dynamic coverage loss.
 - Added unified account, state, serialization, CPI, PDA, external-program, sysvar, runtime-operation, event, error, capability, and review-complexity models.
 - Deepened Anchor, native Rust, Pinocchio, Steel, and Quasar enrichment; added Codama/Shank metadata enrichment and source/IDL reconciliation.
 - Added full CLI commands/options/policy exit codes, deterministic local caches, baselines/diffs, scope configuration, duplicate hashing, and standalone offline HTML graph modes.
 - Expanded VS Code commands, Explorer hierarchy, semantic CodeLens/hovers, diagnostics, cancellation, debounced auto-analysis, bounded concurrency, and persisted cache/report behavior.
-- Added strict report-schema validation, 65 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
+- Added strict report-schema validation, 87 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
 - Fixed packaged CommonJS parser initialization, root-level VS Code source discovery, workspace-relative test exclusion, scopefile merging, lexical marker counting, and percentage-policy/report rendering errors.
 
 ## 0.5.0

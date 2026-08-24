@@ -77,6 +77,8 @@ export interface FunctionMetric {
   sysvars?: string[];
   stateAccess?: string[];
   serialization?: string[];
+  cfgStatus?: 'active' | 'unknown';
+  cfgPredicates?: string[];
 }
 
 export type CallResolutionStatus = 'resolved' | 'ambiguous' | 'unresolved' | 'external' | 'dynamic';
@@ -91,6 +93,10 @@ export interface RustSymbol {
   visibility: string;
   location: SourceLocation;
   evidence: Evidence[];
+  implType?: string;
+  traitName?: string;
+  cfgStatus?: 'active' | 'unknown';
+  cfgPredicates?: string[];
 }
 
 export interface InstructionInfo {
@@ -105,7 +111,12 @@ export interface InstructionInfo {
   discriminator?: string;
   arguments?: Array<{ name: string; type?: string }>;
   reachableSurface?: InstructionReachableSurface;
+  cfgStatus?: 'active' | 'unknown';
+  cfgPredicates?: string[];
 }
+
+export interface UnresolvedCallDetail { callId: string; expression: string; status: 'ambiguous' | 'unresolved' | 'dynamic'; reason: string; candidates: string[]; location: SourceLocation; }
+export interface CrossPackageReachableSurface { program: string; functions: string[]; cpiIds: string[]; signedCpiIds: string[]; dynamicCpiIds: string[]; pdaIds: string[]; stateTypeIds: string[]; runtimeOperationIds: string[]; externalProgramIds: string[]; unresolvedCallIds: string[]; ambiguousCallIds: string[]; complete: boolean; evidence: Evidence[]; }
 
 export interface InstructionReachableSurface {
     directHandler?: string;
@@ -139,6 +150,8 @@ export interface InstructionReachableSurface {
     dataMutationSites?: string[];
     reachableCyclomaticComplexity?: number;
     reviewComplexity?: ReviewComplexity;
+    unresolvedCallDetails?: UnresolvedCallDetail[];
+    crossPackageSurfaces?: CrossPackageReachableSurface[];
 }
 
 export interface AccountInfo {
@@ -396,7 +409,7 @@ export interface InstructionDossier {
   discriminator?: string;
   arguments: Array<{ name: string; type?: string }>;
   location: SourceLocation;
-  reachability: { complete: boolean; incompleteReasons: string[]; functions: string[]; unresolvedCalls: string[]; ambiguousCalls: string[] };
+  reachability: { complete: boolean; incompleteReasons: string[]; functions: string[]; unresolvedCalls: string[]; ambiguousCalls: string[]; unresolvedCallDetails: UnresolvedCallDetail[] };
   accounts: InstructionAccountDossier[];
   cpis: InstructionCpiDossier[];
   pdas: InstructionPdaDossier[];
@@ -406,6 +419,7 @@ export interface InstructionDossier {
   runtimeOperationIds: string[];
   eventIds: string[];
   errorIds: string[];
+  crossPackageSurfaces: CrossPackageReachableSurface[];
   semanticSites: {
     initialization: string[];
     realloc: string[];
@@ -514,6 +528,7 @@ export interface ArchitectureEdge {
 
 export interface ProgramUnit {
   name: string;
+  cargoMetadataId?: string;
   manifestUri?: string;
   rootUri?: string;
   packageKind?: PackageKind;
@@ -543,6 +558,7 @@ export interface ProgramUnit {
   reviewComplexity?: ReviewComplexity;
   instructionDossiers?: InstructionDossier[];
   stateFlows?: StateFlow[];
+  conditionalCompilation?: { featureKnowledge: 'cargo-metadata' | 'unknown'; enabledFeatures: string[]; inactiveItems: number; unknownItems: number; unknownPredicates: string[]; evidence: Evidence[] };
 }
 
 export interface WorkspaceReport {
@@ -578,7 +594,7 @@ export interface WorkspaceReport {
   };
 }
 
-export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; sourceExpression?: string; candidateTargets?: string[]; target?: string; status?: CallResolutionStatus; confidence?: number; location: SourceLocation; evidence: Evidence[]; }
+export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; sourceExpression?: string; candidateTargets?: string[]; target?: string; status?: CallResolutionStatus; confidence?: number; resolutionReason?: string; receiverType?: string; location: SourceLocation; evidence: Evidence[]; }
 export interface CallGraph { symbols: string[]; calls: CallSite[]; edges: Array<{ source: string; target: string; confidence: number }>; }
 export interface IdlInstructionAccount {
   name: string;

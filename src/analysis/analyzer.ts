@@ -21,16 +21,22 @@ import { enrichNativeAccountSemantics } from './accountSemantics';
 import { enrichMetadataFrameworks } from '../adapters/metadataAdapter';
 import { mapConcurrent } from '../utils/concurrency';
 import { refreshAuditProducts } from './auditProducts';
+import { analyzeConditionalCompilation, CfgFileAnalysis } from './cfg';
 
 export interface RustSourceInput { uri: string; source: string; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
 export class AnalysisCancelledError extends Error { constructor() { super('Analysis cancelled.'); this.name = 'AnalysisCancelledError'; } }
 
 export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string, runtimeWasmPath?: string, isCancelled: () => boolean = () => false): Promise<WorkspaceReport> {
-  const parsed = await mapConcurrent(inputs, 8, input => { if (isCancelled()) throw new AnalysisCancelledError(); return parseRust(input.uri, input.source, wasmPath, runtimeWasmPath); });
+  const originalParsed = await mapConcurrent(inputs, 8, input => { if (isCancelled()) throw new AnalysisCancelledError(); return parseRust(input.uri, input.source, wasmPath, runtimeWasmPath); });
   if (isCancelled()) throw new AnalysisCancelledError();
   const workspaceGraph = inputs.find(input => input.workspaceGraph)?.workspaceGraph;
+  const cfgAnalyses = originalParsed.map((file, index) => {
+    const input = inputs[index]; const pkg = workspaceGraph?.packages.find(item => item.id === input.packageId || item.name === input.packageName);
+    return file.tree ? analyzeConditionalCompilation(file.tree.rootNode, file.uri, file.source, pkg?.enabledFeatures) : { source: file.source, inactiveItems: 0, unknownItems: 0, unknownPredicates: [], unknownRanges: [] } satisfies CfgFileAnalysis;
+  });
+  const parsed = await mapConcurrent(originalParsed, 8, async (file, index) => cfgAnalyses[index].source === file.source ? file : parseRust(file.uri, cfgAnalyses[index].source, wasmPath, runtimeWasmPath));
   const analysisDiagnostics = [
-    ...parsed.filter(file => file.error).map((file, index) => ({ id: `diagnostic:parse:${index}`, severity: 'error' as const, category: 'parse' as const, message: file.error!, location: { uri: file.uri, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } })),
+    ...originalParsed.filter(file => file.error).map((file, index) => ({ id: `diagnostic:parse:${index}`, severity: 'error' as const, category: 'parse' as const, message: file.error!, location: { uri: file.uri, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } })),
     ...(workspaceGraph?.diagnostics ?? [])
   ];
   const diagnostics = analysisDiagnostics.map(item => `${item.location?.uri ? `${item.location.uri}: ` : ''}${item.message}`);
@@ -39,14 +45,15 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   const files: FileMetric[] = [];
   parsed.forEach((file, index) => {
     const input = inputs[index];
-    const metric = fileMetric(file);
+    const metric = fileMetric(originalParsed[index]);
     files.push(metric);
     const name = input.packageName ?? packageFromUri(input.uri);
     const cargoPackage = workspaceGraph?.packages.find(pkg => pkg.id === input.packageId || pkg.name === name);
     const program = programs.get(name) ?? emptyProgram(name, input.manifestUri, input.packageKind, input.packageEvidence);
-    if (cargoPackage) { program.rootUri = cargoPackage.rootUri; program.packageId = cargoPackage.id; program.packageConfidence = cargoPackage.confidence; program.packageDependencies = cargoPackage.dependencies; }
+    if (cargoPackage) { program.rootUri = cargoPackage.rootUri; program.packageId = cargoPackage.id; program.cargoMetadataId = cargoPackage.metadataId; program.packageConfidence = cargoPackage.confidence; program.packageDependencies = cargoPackage.dependencies; }
     program.rustFiles.push(metric);
     if (file.tree) extract(file, program);
+    applyConditionalCompilation(program, file.uri, cfgAnalyses[index], cargoPackage?.enabledFeatures);
     if (file.tree) parsedByPackage.set(name, [...(parsedByPackage.get(name) ?? []), { uri: file.uri, root: file.tree.rootNode, packageName: name, packageRoot: input.packageRoot ?? cargoPackage?.rootUri }]);
     programs.set(name, program);
   });
@@ -61,7 +68,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     program.symbols = symbolIndex.symbols;
     for (const fn of program.functions) {
       const symbol = symbolIndex.symbols.find(item => (item.kind === 'function' || item.kind === 'method') && item.location.uri === fn.location.uri && item.location.startLine === fn.location.startLine && item.location.startColumn === fn.location.startColumn && item.shortName === fn.name);
-      if (symbol) fn.qualifiedName = symbol.qualifiedName;
+      if (symbol) { fn.qualifiedName = symbol.qualifiedName; symbol.cfgStatus = fn.cfgStatus; symbol.cfgPredicates = fn.cfgPredicates; }
     }
   }
   for (const program of list) program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions, symbolIndexes.get(program.name));
@@ -81,6 +88,9 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     buildExternalPrograms(program);
     propagateReachableSurface(program);
     linkReachableSemantics(program);
+  }
+  propagateCrossPackageSurfaces(list);
+  for (const program of list) {
     program.reviewHotspots = applyReviewComplexity(program);
     program.capabilities = buildCapabilities(program);
   }
@@ -110,8 +120,25 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   return report;
 }
 
+function applyConditionalCompilation(program: ProgramUnit, uri: string, analysis: CfgFileAnalysis, enabledFeatures?: string[]): void {
+  const summary = program.conditionalCompilation ?? { featureKnowledge: enabledFeatures ? 'cargo-metadata' as const : 'unknown' as const, enabledFeatures: [], inactiveItems: 0, unknownItems: 0, unknownPredicates: [], evidence: [] };
+  if (enabledFeatures) summary.featureKnowledge = 'cargo-metadata';
+  summary.enabledFeatures = [...new Set([...summary.enabledFeatures, ...(enabledFeatures ?? [])])].sort();
+  summary.inactiveItems += analysis.inactiveItems; summary.unknownItems += analysis.unknownItems;
+  summary.unknownPredicates = [...new Set([...summary.unknownPredicates, ...analysis.unknownPredicates])].sort();
+  summary.evidence = [...summary.evidence, ...(analysis.inactiveItems ? [{ description: `${analysis.inactiveItems} cfg-disabled item(s) excluded from semantic reachability in ${uri}` }] : []), ...analysis.unknownRanges.flatMap(item => item.evidence)];
+  program.conditionalCompilation = summary;
+  const annotate = (item: { location: import('../model/sourceLocation').SourceLocation; cfgStatus?: 'active' | 'unknown'; cfgPredicates?: string[] }) => {
+    const ranges = analysis.unknownRanges.filter(range => item.location.uri === uri && (item.location.startLine > range.startLine || item.location.startLine === range.startLine && item.location.startColumn >= range.startColumn) && (item.location.endLine < range.endLine || item.location.endLine === range.endLine && item.location.endColumn <= range.endColumn));
+    if (!ranges.length) return; item.cfgStatus = 'unknown'; item.cfgPredicates = [...new Set(ranges.flatMap(range => range.predicates))].sort();
+  };
+  program.functions.filter(item => item.location.uri === uri).forEach(annotate);
+  program.instructions.filter(item => item.location.uri === uri).forEach(annotate);
+}
+
 function resolveCrossPackageCalls(programs: ProgramUnit[], indexes: Map<string, RustSymbolIndex>): void {
   const byPackageId = new Map(programs.filter(program => program.packageId).map(program => [program.packageId!, program]));
+  const byMetadataId = new Map(programs.filter(program => program.cargoMetadataId).map(program => [program.cargoMetadataId!, program]));
   for (const program of programs) {
     const graph = program.callGraph; const index = indexes.get(program.name); if (!graph || !index) continue;
     for (const call of graph.calls.filter(item => item.status === 'external' || item.status === 'unresolved')) {
@@ -121,15 +148,20 @@ function resolveCrossPackageCalls(programs: ProgramUnit[], indexes: Map<string, 
       const imported = index.imports.find(item => item.fileUri === call.location.uri && item.module === module && !item.glob && item.alias === first);
       if (imported) expression = `${imported.target}${expression.slice(first.length)}`;
       const prefix = expression.split('::')[0];
-      const dependency = (program.packageDependencies ?? []).find(item => item.internalPackageId && normalizeCrateName(item.name) === normalizeCrateName(prefix));
-      const targetProgram = dependency?.internalPackageId ? byPackageId.get(dependency.internalPackageId) : undefined;
+      const dependency = (program.packageDependencies ?? []).find(item => item.kind === 'normal' && normalizeCrateName(item.name) === normalizeCrateName(prefix) && (item.internalPackageId || item.resolvedPackageIds?.some(id => byMetadataId.has(id))));
+      const targetProgram = dependency?.internalPackageId ? byPackageId.get(dependency.internalPackageId) : dependency?.resolvedPackageIds?.map(id => byMetadataId.get(id)).find((item): item is ProgramUnit => !!item);
       if (!targetProgram) continue;
       const relative = expression.includes('::') ? expression.split('::').slice(1).join('::') : '';
-      const candidates = (targetProgram.symbols ?? []).filter(symbol => (symbol.kind === 'function' || symbol.kind === 'method') && symbol.visibility.startsWith('pub') && (relative ? symbol.qualifiedName === `crate::${relative}` : symbol.shortName === expression));
+      const candidates = (targetProgram.symbols ?? []).filter(symbol => (symbol.kind === 'function' || symbol.kind === 'method') && symbol.visibility === 'pub' && (relative ? symbol.qualifiedName === `crate::${relative}` : symbol.shortName === expression));
       const qualified = (symbol: typeof candidates[number]) => `${targetProgram.name}::${symbol.qualifiedName.replace(/^crate::/, '')}`;
-      if (candidates.length !== 1) { if (candidates.length > 1) { call.status = 'ambiguous'; call.candidateTargets = candidates.map(qualified).sort(); call.confidence = 0.35; } continue; }
+      if (candidates.length !== 1) {
+        call.resolved = false;
+        if (candidates.length > 1) { call.status = 'ambiguous'; call.candidateTargets = candidates.map(qualified).sort(); call.confidence = 0.35; call.resolutionReason = `multiple public functions in internal Cargo dependency ${targetProgram.name} match ${expression}`; }
+        else { call.status = 'unresolved'; call.candidateTargets = []; call.confidence = 0.25; call.resolutionReason = `internal Cargo dependency ${targetProgram.name} is known, but no externally public indexed function matches ${expression}`; }
+        continue;
+      }
       const symbol = candidates[0]; const target = qualified(symbol);
-      call.status = 'resolved'; call.resolved = true; call.target = target; call.callee = target; call.candidateTargets = [target]; call.confidence = 0.88;
+      call.status = 'resolved'; call.resolved = true; call.target = target; call.callee = target; call.candidateTargets = [target]; call.confidence = 0.88; call.resolutionReason = `one public function matched through internal Cargo dependency ${dependency!.name}`;
       call.evidence.push({ description: `public function resolved through internal Cargo dependency ${dependency!.name}`, location: call.location });
       graph.symbols.push(target); graph.edges.push({ source: call.caller, target, confidence: 0.88 });
       program.symbols ??= []; program.symbols.push({ ...symbol, id: `symbol:cross-package:${program.name}:${symbol.id}`, qualifiedName: target, evidence: [...symbol.evidence, { description: `indexed internal dependency ${targetProgram.name}` }] });
@@ -213,6 +245,9 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     }
   const semanticContexts = new Map([...anchor.instructions, ...quasar.instructions].map(instruction => [instruction.contextType, instruction]));
   for (const fn of descendants(root, 'function_item')) {
+    // Required and default trait members are not concrete entrypoints until a
+    // matching impl is selected. Their impl bodies are visited independently.
+    if (hasAncestor(fn, 'trait_item')) continue;
     const name = nodeText(field(fn, 'name'));
     const children = fn.children.filter((child): child is RustNode => child !== null);
     const visibility = children.find(child => child.type === 'visibility_modifier')?.text ?? 'private';
@@ -249,6 +284,12 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   program.securitySurface.manualSerialization += (source.match(/try_from_slice|serialize|deserialize|borsh/g) ?? []).length;
   program.securitySurface.cpiSites = [...new Map(program.securitySurface.cpiSites.map(site => [site.id, site])).values()];
   program.securitySurface.pdaSites = [...new Map(program.securitySurface.pdaSites.map(site => [site.id, site])).values()];
+}
+
+function hasAncestor(node: RustNode, type: string): boolean {
+  let parent = node.parent;
+  while (parent) { if (parent.type === type) return true; parent = parent.parent; }
+  return false;
 }
 
 function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit, source: string, uri: string): void {
@@ -451,6 +492,7 @@ function propagateReachableSurface(program: ProgramUnit): void {
     const reachableCalls = graph.calls.filter(call => functions.has(call.caller));
     const unresolvedCalls = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'dynamic').map(call => call.id);
     const ambiguousCalls = reachableCalls.filter(call => call.status === 'ambiguous').map(call => call.id);
+    const unresolvedCallDetails = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'dynamic' || call.status === 'ambiguous').map(call => ({ callId: call.id, expression: call.sourceExpression ?? call.callee, status: call.status as 'ambiguous' | 'unresolved' | 'dynamic', reason: call.resolutionReason ?? 'resolution evidence unavailable', candidates: [...(call.candidateTargets ?? [])], location: call.location })).sort((a, b) => a.callId.localeCompare(b.callId));
     const crossPackageFunctions = [...functions].filter(name => !byName.has(name) && reachableCalls.some(call => call.status === 'resolved' && call.target === name));
     const reachableCpiSites = program.securitySurface.cpiSites.filter(site => site.enclosingInstruction === instruction.name || sites.some(fn => fn.name === site.functionName));
     const cpis = reachableCpiSites.map(site => site.id ?? '');
@@ -458,11 +500,66 @@ function propagateReachableSurface(program: ProgramUnit): void {
     const accountIds = program.relationships?.filter(rel => rel.instructionId === (instruction.id ?? instruction.name)).map(rel => rel.accountId) ?? [];
     const externalPrograms = reachableCpiSites.map(site => `external:${site.target ?? site.invocationApi ?? 'unknown'}`);
     for (const external of program.externalPrograms ?? []) if (externalPrograms.includes(external.id)) external.calledByInstructions = [...new Set([...external.calledByInstructions, instruction.id ?? instruction.name])].sort();
-    const incompleteReasons = [...(unresolvedCalls.length ? [`${unresolvedCalls.length} unknown/dynamic calls`] : []), ...(ambiguousCalls.length ? [`${ambiguousCalls.length} ambiguous calls`] : []), ...(crossPackageFunctions.length ? [`${crossPackageFunctions.length} cross-package functions indexed but not merged into this program's semantic surface`] : [])];
-    instruction.reachableSurface = { directHandler: handler, functions: [...functions].sort(), unresolvedCalls, ambiguousCalls, complete: !incompleteReasons.length, incompleteReasons, directAccounts: [...new Set(accountIds)].sort(), accounts: [...new Set(accountIds)].sort(), directCpis: reachableCpiSites.filter(site => site.functionName === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), cpis: [...new Set(cpis)].sort(), signedCpis: reachableCpiSites.filter(site => site.pdaSigned).map(site => site.id ?? ''), dynamicCpis: reachableCpiSites.filter(site => site.targetKind === 'dynamic' || !site.target).map(site => site.id ?? ''), directPdas: program.securitySurface.pdaSites.filter(site => site.enclosingFunction === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), pdas: [...new Set(pdas)].sort(), externalPrograms: [...new Set(externalPrograms)].sort(), unsafeFunctions: sites.filter(fn => fn.isUnsafe).map(fn => fn.qualifiedName ?? fn.name), unsafeBlocks: sites.reduce((sum, fn) => sum + (fn.unsafeBlocks ?? 0), 0), reachableCyclomaticComplexity: sites.reduce((sum, fn) => sum + fn.complexity, 0) };
+    const cfgUnknown = sites.filter(fn => fn.cfgStatus === 'unknown');
+    const incompleteReasons = [...(unresolvedCalls.length ? [`${unresolvedCalls.length} unresolved or dynamic calls; inspect unresolvedCallDetails`] : []), ...(ambiguousCalls.length ? [`${ambiguousCalls.length} ambiguous calls; inspect candidate targets`] : []), ...(crossPackageFunctions.length ? [`${crossPackageFunctions.length} cross-package functions await workspace semantic propagation`] : []), ...(cfgUnknown.length || instruction.cfgStatus === 'unknown' ? [`conditional compilation is unresolved for ${cfgUnknown.length + (instruction.cfgStatus === 'unknown' ? 1 : 0)} reachable item(s)`] : [])];
+    instruction.reachableSurface = { directHandler: handler, functions: [...functions].sort(), unresolvedCalls, ambiguousCalls, unresolvedCallDetails, complete: !incompleteReasons.length, incompleteReasons, directAccounts: [...new Set(accountIds)].sort(), accounts: [...new Set(accountIds)].sort(), directCpis: reachableCpiSites.filter(site => site.functionName === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), cpis: [...new Set(cpis)].sort(), signedCpis: reachableCpiSites.filter(site => site.pdaSigned).map(site => site.id ?? ''), dynamicCpis: reachableCpiSites.filter(site => site.targetKind === 'dynamic' || !site.target).map(site => site.id ?? ''), directPdas: program.securitySurface.pdaSites.filter(site => site.enclosingFunction === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), pdas: [...new Set(pdas)].sort(), externalPrograms: [...new Set(externalPrograms)].sort(), unsafeFunctions: sites.filter(fn => fn.isUnsafe).map(fn => fn.qualifiedName ?? fn.name), unsafeBlocks: sites.reduce((sum, fn) => sum + (fn.unsafeBlocks ?? 0), 0), reachableCyclomaticComplexity: sites.reduce((sum, fn) => sum + fn.complexity, 0) };
     for (const fn of sites) { fn.reachableFunctions = [...functions].sort(); fn.cpiCount = cpis.length; fn.pdaCount = pdas.length; }
   }
 }
+
+function propagateCrossPackageSurfaces(programs: ProgramUnit[]): void {
+  const parseTarget = (target: string | undefined): { program: ProgramUnit; functionName: string } | undefined => {
+    if (!target) return undefined;
+    const program = [...programs].sort((a, b) => b.name.length - a.name.length).find(item => target.startsWith(`${item.name}::`));
+    if (!program) return undefined; return { program, functionName: `crate::${target.slice(program.name.length + 2)}` };
+  };
+  for (const sourceProgram of programs) for (const instruction of sourceProgram.instructions) {
+    const surface = instruction.reachableSurface; if (!surface || !sourceProgram.callGraph) continue;
+    const initial = sourceProgram.callGraph.calls.filter(call => surface.functions.includes(call.caller) && call.status === 'resolved').flatMap(call => { const parsed = parseTarget(call.target); return parsed ? [parsed] : []; });
+    if (!initial.length) { surface.crossPackageSurfaces = []; continue; }
+    const queue = [...initial]; const visited = new Set<string>(); const missing: string[] = [];
+    const groups = new Map<string, { program: ProgramUnit; functions: Set<string>; cpis: Set<string>; signedCpis: Set<string>; dynamicCpis: Set<string>; pdas: Set<string>; states: Set<string>; runtime: Set<string>; external: Set<string>; unresolved: Set<string>; ambiguous: Set<string>; evidence: Evidence[]; complexity: number; unsafe: number; cfgUnknown: number }>();
+    const details = [...(surface.unresolvedCallDetails ?? [])];
+    while (queue.length) {
+      const current = queue.shift()!; const key = `${current.program.name}:${current.functionName}`; if (visited.has(key)) continue; visited.add(key);
+      const fn = current.program.functions.find(item => (item.qualifiedName ?? item.name) === current.functionName);
+      if (!fn) { missing.push(key); continue; }
+      const group = groups.get(current.program.name) ?? { program: current.program, functions: new Set(), cpis: new Set(), signedCpis: new Set(), dynamicCpis: new Set(), pdas: new Set(), states: new Set(), runtime: new Set(), external: new Set(), unresolved: new Set(), ambiguous: new Set(), evidence: [], complexity: 0, unsafe: 0, cfgUnknown: 0 };
+      const rendered = `${current.program.name}::${current.functionName.replace(/^crate::/, '')}`; group.functions.add(rendered); group.complexity += fn.complexity; group.unsafe += (fn.isUnsafe ? 1 : 0) + (fn.unsafeBlocks ?? 0); if (fn.cfgStatus === 'unknown') group.cfgUnknown++;
+      group.evidence.push({ description: `Reached ${rendered} through a resolved internal Cargo dependency`, location: fn.location });
+      const functionCpis = current.program.securitySurface.cpiSites.filter(site => site.id && site.functionName === fn.name && containsLocation(fn.location, site.location));
+      for (const cpi of functionCpis) { group.cpis.add(cpi.id!); if (cpi.pdaSigned) group.signedCpis.add(cpi.id!); if (cpi.targetKind === 'dynamic' || !cpi.target) group.dynamicCpis.add(cpi.id!); group.external.add(`external:${cpi.target ?? cpi.invocationApi ?? 'unknown'}`); }
+      for (const pda of current.program.securitySurface.pdaSites.filter(site => site.id && site.enclosingFunction === fn.name && containsLocation(fn.location, site.location))) group.pdas.add(pda.id!);
+      for (const state of current.program.stateTypes ?? []) if (fn.stateAccess?.includes(state.name)) group.states.add(state.id);
+      for (const operation of current.program.runtimeOperations?.filter(item => item.functionName === fn.name && containsLocation(fn.location, item.location)) ?? []) group.runtime.add(operation.id);
+      for (const call of current.program.callGraph?.calls.filter(item => item.caller === current.functionName) ?? []) {
+        if (call.status === 'resolved' && call.target) {
+          const cross = parseTarget(call.target); if (cross) queue.push(cross); else if (call.target.startsWith('crate::')) queue.push({ program: current.program, functionName: call.target });
+        } else if (call.status === 'unresolved' || call.status === 'dynamic' || call.status === 'ambiguous') {
+          (call.status === 'ambiguous' ? group.ambiguous : group.unresolved).add(call.id);
+          details.push({ callId: call.id, expression: call.sourceExpression ?? call.callee, status: call.status, reason: call.resolutionReason ?? 'resolution evidence unavailable', candidates: [...(call.candidateTargets ?? [])], location: call.location });
+        }
+      }
+      groups.set(current.program.name, group);
+    }
+    surface.crossPackageSurfaces = [...groups.values()].map(group => ({
+      program: group.program.name, functions: [...group.functions].sort(), cpiIds: [...group.cpis].sort(), signedCpiIds: [...group.signedCpis].sort(), dynamicCpiIds: [...group.dynamicCpis].sort(), pdaIds: [...group.pdas].sort(), stateTypeIds: [...group.states].sort(), runtimeOperationIds: [...group.runtime].sort(), externalProgramIds: [...group.external].sort(), unresolvedCallIds: [...group.unresolved].sort(), ambiguousCallIds: [...group.ambiguous].sort(), complete: !group.unresolved.size && !group.ambiguous.size && !group.cfgUnknown, evidence: dedupeSemanticEvidence(group.evidence)
+    })).sort((a, b) => a.program.localeCompare(b.program));
+    surface.functions = [...new Set([...surface.functions, ...surface.crossPackageSurfaces.flatMap(item => item.functions)])].sort();
+    surface.unresolvedCalls = [...new Set([...(surface.unresolvedCalls ?? []), ...surface.crossPackageSurfaces.flatMap(item => item.unresolvedCallIds)])].sort();
+    surface.ambiguousCalls = [...new Set([...(surface.ambiguousCalls ?? []), ...surface.crossPackageSurfaces.flatMap(item => item.ambiguousCallIds)])].sort();
+    surface.unresolvedCallDetails = [...new Map(details.map(item => [item.callId, item])).values()].sort((a, b) => a.callId.localeCompare(b.callId));
+    surface.reachableCyclomaticComplexity = (surface.reachableCyclomaticComplexity ?? 0) + [...groups.values()].reduce((sum, item) => sum + item.complexity, 0);
+    surface.unsafeBlocks = (surface.unsafeBlocks ?? 0) + [...groups.values()].reduce((sum, item) => sum + item.unsafe, 0);
+    const retained = (surface.incompleteReasons ?? []).filter(reason => !/cross-package functions await|unresolved or dynamic calls|ambiguous calls/.test(reason));
+    const crossCfgUnknown = [...groups.values()].reduce((sum, item) => sum + item.cfgUnknown, 0);
+    surface.incompleteReasons = [...retained, ...(surface.unresolvedCalls.length ? [`${surface.unresolvedCalls.length} unresolved or dynamic calls; inspect unresolvedCallDetails`] : []), ...(surface.ambiguousCalls.length ? [`${surface.ambiguousCalls.length} ambiguous calls; inspect candidate targets`] : []), ...(missing.length ? [`${missing.length} resolved cross-package function(s) were not present in the indexed dependency source`] : []), ...(crossCfgUnknown ? [`conditional compilation is unresolved for ${crossCfgUnknown} cross-package reachable item(s)`] : [])];
+    surface.complete = !surface.incompleteReasons.length;
+  }
+}
+
+function containsLocation(owner: import('../model/sourceLocation').SourceLocation, child: import('../model/sourceLocation').SourceLocation): boolean { return owner.uri === child.uri && owner.startLine <= child.startLine && owner.endLine >= child.endLine; }
+function dedupeSemanticEvidence(items: Evidence[]): Evidence[] { return [...new Map(items.map(item => [`${item.description}:${item.location?.uri ?? ''}:${item.location?.startLine ?? ''}`, item])).values()].sort((a, b) => `${a.location?.uri ?? ''}:${a.location?.startLine ?? 0}:${a.description}`.localeCompare(`${b.location?.uri ?? ''}:${b.location?.startLine ?? 0}:${b.description}`)); }
 
 function emptyProgram(name: string, manifestUri?: string, packageKind: PackageKind = 'unknown', packageEvidence: Evidence[] = []): ProgramUnit {
   return { name, manifestUri, packageKind, packageEvidence, rustFiles: [], functions: [], instructions: [], accounts: [], frameworkEvidence: [], securitySurface: { signerSignals: 0, writableSignals: 0, ownerValidationSignals: 0, addressValidationSignals: 0, remainingAccounts: 0, rawOrUncheckedAccounts: 0, manualAccountIteration: 0, unsafeBlocks: 0, manualSignerChecks: 0, manualOwnerChecks: 0, manualWritableChecks: 0, manualAddressChecks: 0, manualSerialization: 0, reallocOperations: 0, unsafeFunctions: 0, cpiSites: [], pdaSites: [] }, relationships: [], architecture: { nodes: [], edges: [] } };

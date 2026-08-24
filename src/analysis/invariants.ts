@@ -4,6 +4,8 @@ import { SourceLocation } from '../model/sourceLocation';
 export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
   const diagnostics: AnalysisDiagnostic[] = [];
   const add = (message: string, key: string, location?: SourceLocation) => diagnostics.push({ id: `diagnostic:invariant:${key}`, severity: 'error', category: 'invariant', message, location });
+  const programsByName = new Map(report.programs.map(program => [program.name, program]));
+  const callIds = new Set(report.programs.flatMap(program => program.callGraph?.calls.map(call => call.id) ?? []));
   for (const program of report.programs) {
     unique(program.instructions.map(item => item.id).filter((id): id is string => !!id), `${program.name}:instruction`, add);
     unique(program.accounts.map(item => item.id).filter((id): id is string => !!id), `${program.name}:account`, add);
@@ -28,6 +30,20 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
       }
       for (const cpi of dossier.cpis) if (!cpiIds.has(cpi.cpiId)) add(`Instruction dossier ${dossier.id} references missing CPI ${cpi.cpiId}`, `dossier-cpi:${program.name}:${dossier.id}:${cpi.cpiId}`);
       for (const pda of dossier.pdas) if (!pdaIds.has(pda.pdaId)) add(`Instruction dossier ${dossier.id} references missing PDA ${pda.pdaId}`, `dossier-pda:${program.name}:${dossier.id}:${pda.pdaId}`);
+      for (const detail of dossier.reachability.unresolvedCallDetails) {
+        if (!callIds.has(detail.callId)) add(`Instruction dossier ${dossier.id} references missing call ${detail.callId}`, `dossier-call:${program.name}:${dossier.id}:${detail.callId}`);
+        if (![...dossier.reachability.unresolvedCalls, ...dossier.reachability.ambiguousCalls].includes(detail.callId)) add(`Instruction dossier ${dossier.id} has an unclassified unresolved-call detail ${detail.callId}`, `dossier-call-classification:${program.name}:${dossier.id}:${detail.callId}`);
+      }
+      const crossNames = dossier.crossPackageSurfaces.map(item => item.program);
+      unique(crossNames, `${program.name}:dossier-cross-package:${dossier.id}`, add);
+      for (const cross of dossier.crossPackageSurfaces) {
+        const target = programsByName.get(cross.program);
+        if (!target) { add(`Instruction dossier ${dossier.id} references missing cross-package program ${cross.program}`, `dossier-cross-program:${program.name}:${dossier.id}:${cross.program}`); continue; }
+        validateReferences(cross.cpiIds, new Set(target.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id)), 'CPI', cross.program, dossier.id, add);
+        validateReferences(cross.pdaIds, new Set(target.securitySurface.pdaSites.map(item => item.id).filter((id): id is string => !!id)), 'PDA', cross.program, dossier.id, add);
+        validateReferences(cross.stateTypeIds, new Set((target.stateTypes ?? []).map(item => item.id)), 'state type', cross.program, dossier.id, add);
+        validateReferences(cross.runtimeOperationIds, new Set((target.runtimeOperations ?? []).map(item => item.id)), 'runtime operation', cross.program, dossier.id, add);
+      }
     }
     for (const flow of program.stateFlows ?? []) {
       if (!instructionIds.has(flow.instructionId)) add(`State flow ${flow.id} references missing instruction ${flow.instructionId}`, `state-flow-instruction:${program.name}:${flow.id}`);
@@ -40,6 +56,8 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     }
     for (const location of locations(program)) if (!validLocation(location)) add(`Invalid source location ${location.uri}:${location.startLine}:${location.startColumn}`, `location:${program.name}:${location.uri}:${location.startLine}:${location.startColumn}`, location);
     if (program.reviewComplexity && (!Number.isFinite(program.reviewComplexity.score) || program.reviewComplexity.score < 0)) add(`Invalid review complexity for ${program.name}`, `review:${program.name}`);
+    const cfg = program.conditionalCompilation;
+    if (cfg && (!Number.isInteger(cfg.inactiveItems) || cfg.inactiveItems < 0 || !Number.isInteger(cfg.unknownItems) || cfg.unknownItems < 0)) add(`Invalid conditional compilation counts for ${program.name}`, `cfg:${program.name}`);
   }
   if (report.auditManifest) {
     const dossierIds = new Set(report.programs.flatMap(program => program.instructionDossiers?.map(item => item.id) ?? []));
@@ -66,5 +84,6 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
 }
 
 function unique(ids: string[], prefix: string, add: (message: string, key: string) => void): void { const seen = new Set<string>(); for (const id of ids) { if (seen.has(id)) add(`Duplicate semantic ID ${id}`, `${prefix}:${id}`); seen.add(id); } }
+function validateReferences(ids: string[], valid: Set<string>, kind: string, target: string, dossierId: string, add: (message: string, key: string) => void): void { for (const id of ids) if (!valid.has(id)) add(`Instruction dossier ${dossierId} references missing cross-package ${kind} ${id} in ${target}`, `dossier-cross-${kind}:${dossierId}:${id}`); }
 function validLocation(location: SourceLocation): boolean { return !!location.uri && Number.isInteger(location.startLine) && location.startLine >= 1 && Number.isInteger(location.endLine) && location.endLine >= location.startLine && Number.isInteger(location.startColumn) && location.startColumn >= 0 && Number.isInteger(location.endColumn) && location.endColumn >= 0 && (location.endLine > location.startLine || location.endColumn >= location.startColumn); }
 function locations(program: WorkspaceReport['programs'][number]): SourceLocation[] { return [...program.functions.map(item => item.location), ...program.instructions.map(item => item.location), ...program.accounts.map(item => item.location), ...program.securitySurface.cpiSites.map(item => item.location), ...program.securitySurface.pdaSites.map(item => item.location), ...(program.stateTypes ?? []).map(item => item.location), ...(program.sysvars ?? []).map(item => item.location), ...(program.runtimeOperations ?? []).map(item => item.location), ...(program.events ?? []).map(item => item.location), ...(program.errors ?? []).map(item => item.location), ...(program.instructionDossiers ?? []).map(item => item.location), ...(program.stateFlows ?? []).map(item => item.location)]; }

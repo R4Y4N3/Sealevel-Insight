@@ -39,7 +39,9 @@ function applyDeclaredModulePaths(file: IndexedRustFile, files: IndexedRustFile[
   }
 }
 
-function indexChildren(node: RustNode, file: IndexedRustFile, moduleName: string, implType: string | undefined, symbols: RustSymbol[], imports: ImportBinding[]): void {
+interface ImplContext { type: string; trait?: string; }
+
+function indexChildren(node: RustNode, file: IndexedRustFile, moduleName: string, impl: ImplContext | undefined, symbols: RustSymbol[], imports: ImportBinding[]): void {
   for (const child of node.namedChildren.filter((item): item is RustNode => !!item)) {
     if (child.type === 'mod_item') {
       const name = nodeText(field(child, 'name'));
@@ -51,20 +53,27 @@ function indexChildren(node: RustNode, file: IndexedRustFile, moduleName: string
       continue;
     }
     if (child.type === 'impl_item') {
-      const type = nodeText(field(child, 'type')) || implTypeFromText(child.text);
-      indexChildren(child, file, moduleName, type || undefined, symbols, imports);
+      const type = nodeText(field(child, 'type')) || implTypeFromText(child.text); const trait = nodeText(field(child, 'trait')) || undefined;
+      indexChildren(child, file, moduleName, type ? { type, trait } : undefined, symbols, imports);
+      continue;
+    }
+    if (child.type === 'trait_item') {
+      const name = nodeText(field(child, 'name'));
+      if (name) symbols.push(symbol(file, child, name, `${moduleName}::${name}`, 'trait'));
+      // Trait declarations describe a dispatch contract, not directly callable free
+      // functions. Concrete impl methods are indexed separately with their receiver.
       continue;
     }
     if (child.type === 'use_declaration') { imports.push(...parseUse(child, file.uri, moduleName)); continue; }
-    const descriptor = symbolDescriptor(child.type, implType);
+    const descriptor = symbolDescriptor(child.type, impl?.type);
     if (descriptor) {
       const name = nodeText(field(child, 'name'));
       if (name) {
-        const qualifiedName = `${moduleName}::${implType && descriptor.kind === 'method' ? `${cleanType(implType)}::` : ''}${name}`;
-        symbols.push(symbol(file, child, name, qualifiedName, descriptor.kind));
+        const qualifiedName = `${moduleName}::${impl && descriptor.kind === 'method' ? `${cleanType(impl.type)}::` : ''}${name}`;
+        symbols.push(symbol(file, child, name, qualifiedName, descriptor.kind, impl));
       }
     }
-    if (!['function_item', 'closure_expression'].includes(child.type)) indexChildren(child, file, moduleName, implType, symbols, imports);
+    if (!['function_item', 'closure_expression'].includes(child.type)) indexChildren(child, file, moduleName, impl, symbols, imports);
   }
 }
 
@@ -72,17 +81,16 @@ function symbolDescriptor(type: string, implType?: string): { kind: RustSymbol['
   if (type === 'function_item') return { kind: implType ? 'method' : 'function' };
   if (type === 'struct_item') return { kind: 'struct' };
   if (type === 'enum_item') return { kind: 'enum' };
-  if (type === 'trait_item') return { kind: 'trait' };
   if (type === 'const_item') return { kind: 'constant' };
   if (type === 'static_item') return { kind: 'static' };
   if (type === 'type_item') return { kind: 'type-alias' };
   return undefined;
 }
 
-function symbol(file: IndexedRustFile, node: RustNode, shortName: string, qualifiedName: string, kind: RustSymbol['kind']): RustSymbol {
+function symbol(file: IndexedRustFile, node: RustNode, shortName: string, qualifiedName: string, kind: RustSymbol['kind'], impl?: ImplContext): RustSymbol {
   const location = { uri: file.uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column };
   const visibility = node.namedChildren.find(child => child?.type === 'visibility_modifier')?.text ?? 'private';
-  return { id: `symbol:${file.packageName}:${qualifiedName}:${location.uri}:${location.startLine}:${location.startColumn}`, qualifiedName, shortName, kind, package: file.packageName, module: qualifiedName.split('::').slice(0, kind === 'method' ? -2 : -1).join('::') || 'crate', visibility, location, evidence: [{ description: `Rust AST ${kind}`, location }] };
+  return { id: `symbol:${file.packageName}:${qualifiedName}:${location.uri}:${location.startLine}:${location.startColumn}`, qualifiedName, shortName, kind, package: file.packageName, module: qualifiedName.split('::').slice(0, kind === 'method' ? -2 : -1).join('::') || 'crate', visibility, location, implType: impl?.type, traitName: impl?.trait, evidence: [{ description: `Rust AST ${kind}${impl?.trait ? ` in impl ${impl.trait} for ${impl.type}` : impl?.type ? ` in impl ${impl.type}` : ''}`, location }] };
 }
 
 function parseUse(node: RustNode, fileUri: string, module: string): ImportBinding[] {

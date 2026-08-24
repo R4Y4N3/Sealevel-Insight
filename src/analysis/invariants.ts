@@ -7,6 +7,19 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
   const programsByName = new Map(report.programs.map(program => [program.name, program]));
   const callIds = new Set(report.programs.flatMap(program => program.callGraph?.calls.map(call => call.id) ?? []));
   for (const program of report.programs) {
+    unique(program.callGraph?.calls.map(item => item.id) ?? [], `${program.name}:call`, add);
+    unique(program.callGraph?.cycles?.map(item => item.id) ?? [], `${program.name}:cycle`, add);
+    const graphSymbols = new Set(program.callGraph?.symbols ?? []); const graphCallIds = new Set(program.callGraph?.calls.map(item => item.id) ?? []);
+    for (const call of program.callGraph?.calls ?? []) {
+      if (call.status === 'resolved' && (!call.target || !call.resolved)) add(`Resolved call ${call.id} is missing its target/resolved flag`, `call-resolution:${program.name}:${call.id}`, call.location);
+      if (call.status !== 'resolved' && call.resolved) add(`Non-resolved call ${call.id} has resolved=true`, `call-status:${program.name}:${call.id}`, call.location);
+      if (call.resolutionTransforms?.some(item => !item.trim())) add(`Call ${call.id} has an empty dispatch transform`, `call-transform:${program.name}:${call.id}`, call.location);
+    }
+    for (const cycle of program.callGraph?.cycles ?? []) {
+      if (cycle.kind === 'self-recursion' && cycle.functions.length !== 1 || cycle.kind === 'mutual-recursion' && cycle.functions.length < 2) add(`Call cycle ${cycle.id} has inconsistent kind/cardinality`, `cycle-kind:${program.name}:${cycle.id}`);
+      for (const fn of cycle.functions) if (!graphSymbols.has(fn)) add(`Call cycle ${cycle.id} references missing symbol ${fn}`, `cycle-symbol:${program.name}:${cycle.id}:${fn}`);
+      for (const id of cycle.callIds) if (!graphCallIds.has(id)) add(`Call cycle ${cycle.id} references missing call ${id}`, `cycle-call:${program.name}:${cycle.id}:${id}`);
+    }
     unique(program.instructions.map(item => item.id).filter((id): id is string => !!id), `${program.name}:instruction`, add);
     unique(program.accounts.map(item => item.id).filter((id): id is string => !!id), `${program.name}:account`, add);
     unique(program.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id), `${program.name}:cpi`, add);

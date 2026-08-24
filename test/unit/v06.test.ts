@@ -122,7 +122,7 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const before = await sampleReport('#[program] mod p { pub fn run() { target(); } } fn target() {}');
     const after = await analyzeSources([{ uri: 'file:///fixture/lib.rs', source: '#[program] mod p { pub fn run() { helper(); } } fn helper() { target(); } fn target() {}', packageName: 'fixture' }], wasm, undefined, undefined, { compilationProfile: { target: 'sbf-solana-solana', mode: 'normal', cfgOptions: ['target_os="solana"'], cfgKnowledge: 'complete', evidence: [{ description: 'profile' }] } });
     const diff = diffReports(before, after);
-    assert.ok(diff.changes.instructionDossiers.some(item => item.fields?.witnesses)); assert.ok(diff.changes.compilationProfile.some(item => item.fields?.target));
+    assert.ok(diff.changes.instructionDossiers.some(item => item.fields?.witnesses)); assert.ok(diff.changes.compilationProfile.some(item => item.fields?.target)); assert.ok(diff.changes.callGraph.some(item => item.fields?.calls));
     const legacy = JSON.parse(JSON.stringify(before)); for (const program of legacy.programs) for (const dossier of program.instructionDossiers ?? []) delete dossier.reachabilityWitnesses;
     assert.doesNotThrow(() => diffReports(legacy, after));
   });
@@ -147,12 +147,12 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   it('produces standalone HTML with strict offline CSP and sanitized embedded source', async () => {
     const report = await sampleReport('pub fn handler() {}'); report.workspace = { name: '</script><img src=x>', roots: ['/secret/root'] };
     const html = standaloneHtml(report);
-    assert.match(html, /default-src 'none'/); assert.match(html, /Audit Cockpit/); assert.match(html, /Instruction Dossiers/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
+    assert.match(html, /default-src 'none'/); assert.match(html, /Audit Cockpit/); assert.match(html, /Instruction Dossiers/); assert.match(html, /Dispatch & Indirect Calls/); assert.match(html, /Recursion Components/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
   });
 
   it('renders semantic coverage as a real percentage in Markdown', async () => {
     const report = await sampleReport('pub fn handler() {}'); report.coverage!.parsedFiles = { resolved: 4, total: 5, percent: 80 }; report.coverage!.unknownCalls = 2;
-    const markdown = markdownReport(report); assert.match(markdown, /Audit Manifest/); assert.match(markdown, /Instruction Dossiers/); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.match(markdown, /Unknown Calls 2/); assert.doesNotMatch(markdown, /8000\.0%/);
+    const markdown = markdownReport(report); assert.match(markdown, /Audit Manifest/); assert.match(markdown, /Instruction Dossiers/); assert.match(markdown, /Dispatch & Indirect Calls/); assert.match(markdown, /Recursion Components/); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.match(markdown, /Unknown Calls 2/); assert.doesNotMatch(markdown, /8000\.0%/);
   });
 
   it('resolves external modules declared through a Rust path attribute', async () => {
@@ -258,6 +258,56 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(call.status, 'ambiguous'); assert.equal(call.candidateTargets?.length, 2); assert.match(call.resolutionReason ?? '', /multiple indexed inherent\/trait candidates/);
     assert.equal(program.functions.filter(item => item.name === 'run').length, 2);
     assert.equal(program.symbols?.filter(item => item.kind === 'trait').length, 2);
+  });
+
+  it('resolves associated functions, Self paths, and fully qualified trait dispatch', async () => {
+    const report = await sampleReport('trait Execute { fn run(&self); fn build(); } struct Worker; impl Worker { fn new() { Self::helper(); } fn helper() {} } impl Execute for Worker { fn run(&self) { Self::build(); Self::helper(); } fn build() {} } fn dispatch(worker: &Worker) { Worker::new(); <Worker as Execute>::run(worker); }');
+    const calls = report.programs[0].callGraph?.calls ?? [];
+    const associated = calls.find(item => item.sourceExpression === 'Worker::new')!; assert.equal(associated.status, 'resolved'); assert.equal(associated.dispatchKind, 'associated-function'); assert.equal(associated.target, 'crate::Worker::new');
+    const inherentSelf = calls.filter(item => item.sourceExpression === 'Self::helper'); assert.equal(inherentSelf.length, 2); assert.ok(inherentSelf.every(item => item.status === 'resolved' && item.target === 'crate::Worker::helper'));
+    const traitSelf = calls.find(item => item.sourceExpression === 'Self::build')!; assert.equal(traitSelf.status, 'resolved'); assert.match(traitSelf.candidateTargets?.[0] ?? '', /as Execute/);
+    const ufcs = calls.find(item => item.sourceExpression === '<Worker as Execute>::run')!; assert.equal(ufcs.status, 'resolved'); assert.equal(ufcs.dispatchKind, 'ufcs'); assert.equal(ufcs.target, 'crate::Worker::run');
+  });
+
+  it('keeps generic-bound and trait-object dispatch constrained but dynamically incomplete', async () => {
+    const report = await sampleReport('trait Execute { fn execute(&self); fn defaulted(&self) {} } fn generic<T: Execute>(value: T) { value.execute(); value.defaulted(); } fn where_bound<T>(value: T) where T: Execute { value.execute(); } fn opaque(value: impl Execute) { value.execute(); } fn object(value: &dyn Execute) { value.execute(); }');
+    const calls = report.programs[0].callGraph?.calls.filter(item => item.sourceExpression === 'value.execute') ?? [];
+    const generic = calls.find(item => item.receiverType === 'T')!; assert.equal(generic.status, 'dynamic'); assert.equal(generic.dispatchKind, 'generic-bound'); assert.deepEqual(generic.candidateTargets, ['crate::Execute::execute']); assert.match(generic.resolutionReason ?? '', /monomorphization/);
+    const object = calls.find(item => item.receiverType === '&dyn Execute')!; assert.equal(object.status, 'dynamic'); assert.equal(object.dispatchKind, 'trait-object'); assert.deepEqual(object.candidateTargets, ['crate::Execute::execute']);
+    assert.equal(calls.find(item => item.caller === 'crate::where_bound')?.dispatchKind, 'generic-bound'); assert.equal(calls.find(item => item.caller === 'crate::opaque')?.dispatchKind, 'generic-bound');
+    const defaulted = report.programs[0].callGraph?.calls.find(item => item.sourceExpression === 'value.defaulted')!; assert.deepEqual(defaulted.candidateTargets, ['crate::Execute::defaulted']); assert.equal(report.programs[0].functions.some(item => item.name === 'defaulted'), false);
+  });
+
+  it('resolves simple alias and supported deref receiver transforms with evidence', async () => {
+    const report = await sampleReport('trait Execute { fn execute(&self); } struct Worker; type Alias = Worker; impl Execute for Worker { fn execute(&self) {} } fn dispatch(worker: &Box<Alias>) { worker.execute(); }');
+    const call = report.programs[0].callGraph?.calls.find(item => item.sourceExpression === 'worker.execute')!;
+    assert.equal(call.status, 'resolved'); assert.equal(call.target, 'crate::Worker::execute'); assert.deepEqual(call.resolutionTransforms, ['autoderef reference &Box<Alias> -> Box<Alias>', 'supported deref wrapper Box<...> -> Alias', 'type alias Alias -> Worker']);
+    assert.ok(call.evidence.some(item => /Dispatch transform/.test(item.description)));
+  });
+
+  it('resolves local closure and function-item bindings through their bodies', async () => {
+    const report = await sampleReport('#[program] mod p { pub fn run() { let f = helper; let closure = || helper(); f(); closure(); } } fn helper() { deeper(); } fn deeper() {}');
+    const program = report.programs[0]; const calls = program.callGraph?.calls ?? [];
+    const functionItem = calls.find(item => item.sourceExpression === 'f')!; assert.equal(functionItem.status, 'resolved'); assert.equal(functionItem.dispatchKind, 'function-item'); assert.equal(functionItem.target, 'crate::helper'); assert.deepEqual(functionItem.macroOrigins, ['program']);
+    const closure = calls.find(item => item.sourceExpression === 'closure')!; assert.equal(closure.status, 'resolved'); assert.equal(closure.dispatchKind, 'closure'); assert.match(closure.target ?? '', /\{\{closure@/);
+    const closureBody = calls.find(item => item.sourceExpression === 'helper' && item.caller.includes('{{closure@'))!; assert.equal(closureBody.status, 'resolved');
+    assert.equal(program.instructions[0].reachableSurface?.complete, true); assert.ok(program.instructions[0].reachableSurface?.functions.includes('crate::deeper'));
+  });
+
+  it('keeps runtime-selected function pointers explicit and records candidate identities', async () => {
+    const report = await sampleReport('type Callback = fn(); fn first() {} fn second() {} fn dispatch(callback: fn(), aliased: Callback) { callback(); aliased(); let mut selected: fn() = first; selected = second; selected(); }');
+    const calls = report.programs[0].callGraph?.calls ?? [];
+    const parameter = calls.find(item => item.sourceExpression === 'callback')!; assert.equal(parameter.status, 'dynamic'); assert.equal(parameter.dispatchKind, 'function-pointer'); assert.match(parameter.resolutionReason ?? '', /supplied by the caller/);
+    const selected = calls.find(item => item.sourceExpression === 'selected')!; assert.equal(selected.status, 'dynamic'); assert.equal(selected.dispatchKind, 'function-pointer'); assert.deepEqual(selected.candidateTargets, ['crate::first', 'crate::second']);
+    const aliased = calls.find(item => item.sourceExpression === 'aliased')!; assert.equal(aliased.status, 'dynamic'); assert.equal(aliased.receiverType, 'Callback');
+  });
+
+  it('emits deterministic recursion components and local macro-origin uncertainty', async () => {
+    const report = await sampleReport('macro_rules! route { () => { helper() } } fn self_call() { self_call(); } fn a() { b(); } fn b() { a(); } fn run() { route!(); }');
+    const graph = report.programs[0].callGraph!;
+    assert.deepEqual(graph.cycles.map(item => [item.kind, item.functions]), [['mutual-recursion', ['crate::a', 'crate::b']], ['self-recursion', ['crate::self_call']]]);
+    assert.ok(graph.cycles.every(item => item.callIds.length > 0));
+    const macro = graph.calls.find(item => item.sourceExpression === 'route!')!; assert.equal(macro.status, 'dynamic'); assert.equal(macro.dispatchKind, 'macro-origin'); assert.match(macro.resolutionReason ?? '', /does not expand macro token trees/);
   });
 
   it('links Quasar constraints and structured PDA templates across modules', async () => {

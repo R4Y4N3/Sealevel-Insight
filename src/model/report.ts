@@ -87,7 +87,7 @@ export interface RustSymbol {
   id: string;
   qualifiedName: string;
   shortName: string;
-  kind: 'function' | 'method' | 'struct' | 'enum' | 'trait' | 'constant' | 'static' | 'type-alias' | 'module';
+  kind: 'function' | 'method' | 'associated-function' | 'trait-method' | 'closure' | 'struct' | 'enum' | 'trait' | 'constant' | 'static' | 'type-alias' | 'module';
   package: string;
   module: string;
   visibility: string;
@@ -95,6 +95,10 @@ export interface RustSymbol {
   evidence: Evidence[];
   implType?: string;
   traitName?: string;
+  hasSelfReceiver?: boolean;
+  aliasTarget?: string;
+  genericBounds?: Array<{ typeParameter: string; trait: string }>;
+  macroOrigins?: string[];
   cfgStatus?: 'active' | 'unknown';
   cfgPredicates?: string[];
 }
@@ -600,8 +604,10 @@ export interface WorkspaceReport {
   };
 }
 
-export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; sourceExpression?: string; candidateTargets?: string[]; target?: string; status?: CallResolutionStatus; confidence?: number; resolutionReason?: string; receiverType?: string; location: SourceLocation; evidence: Evidence[]; }
-export interface CallGraph { symbols: string[]; calls: CallSite[]; edges: Array<{ source: string; target: string; confidence: number }>; }
+export type CallDispatchKind = 'direct' | 'inherent-method' | 'trait-method' | 'associated-function' | 'ufcs' | 'generic-bound' | 'trait-object' | 'closure' | 'function-item' | 'function-pointer' | 'macro-origin' | 'unknown';
+export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; sourceExpression?: string; candidateTargets?: string[]; target?: string; status?: CallResolutionStatus; confidence?: number; resolutionReason?: string; receiverType?: string; dispatchKind?: CallDispatchKind; indirect?: boolean; resolutionTransforms?: string[]; macroOrigins?: string[]; location: SourceLocation; evidence: Evidence[]; }
+export interface CallCycle { id: string; kind: 'self-recursion' | 'mutual-recursion'; functions: string[]; callIds: string[]; evidence: Evidence[]; }
+export interface CallGraph { symbols: string[]; calls: CallSite[]; edges: Array<{ source: string; target: string; confidence: number }>; cycles: CallCycle[]; }
 export interface IdlInstructionAccount {
   name: string;
   signer?: boolean;

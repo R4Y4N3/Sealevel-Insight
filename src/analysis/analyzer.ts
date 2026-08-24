@@ -70,7 +70,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     symbolIndexes.set(program.name, symbolIndex);
     program.symbols = symbolIndex.symbols;
     for (const fn of program.functions) {
-      const symbol = symbolIndex.symbols.find(item => (item.kind === 'function' || item.kind === 'method') && item.location.uri === fn.location.uri && item.location.startLine === fn.location.startLine && item.location.startColumn === fn.location.startColumn && item.shortName === fn.name);
+      const symbol = symbolIndex.symbols.find(item => (item.kind === 'function' || item.kind === 'method' || item.kind === 'associated-function') && item.location.uri === fn.location.uri && item.location.startLine === fn.location.startLine && item.location.startColumn === fn.location.startColumn && item.shortName === fn.name);
       if (symbol) { fn.qualifiedName = symbol.qualifiedName; symbol.cfgStatus = fn.cfgStatus; symbol.cfgPredicates = fn.cfgPredicates; }
     }
   }
@@ -157,7 +157,7 @@ function resolveCrossPackageCalls(programs: ProgramUnit[], indexes: Map<string, 
       const targetProgram = dependency?.internalPackageId ? byPackageId.get(dependency.internalPackageId) : dependency?.resolvedPackageIds?.map(id => byMetadataId.get(id)).find((item): item is ProgramUnit => !!item);
       if (!targetProgram) continue;
       const relative = expression.includes('::') ? expression.split('::').slice(1).join('::') : '';
-      const candidates = (targetProgram.symbols ?? []).filter(symbol => (symbol.kind === 'function' || symbol.kind === 'method') && symbol.visibility === 'pub' && (relative ? symbol.qualifiedName === `crate::${relative}` : symbol.shortName === expression));
+      const candidates = (targetProgram.symbols ?? []).filter(symbol => (symbol.kind === 'function' || symbol.kind === 'method' || symbol.kind === 'associated-function') && symbol.visibility === 'pub' && (relative ? symbol.qualifiedName === `crate::${relative}` : symbol.shortName === expression));
       const qualified = (symbol: typeof candidates[number]) => `${targetProgram.name}::${symbol.qualifiedName.replace(/^crate::/, '')}`;
       if (candidates.length !== 1) {
         call.resolved = false;
@@ -498,7 +498,8 @@ function propagateReachableSurface(program: ProgramUnit): void {
     const unresolvedCalls = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'dynamic').map(call => call.id);
     const ambiguousCalls = reachableCalls.filter(call => call.status === 'ambiguous').map(call => call.id);
     const unresolvedCallDetails = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'dynamic' || call.status === 'ambiguous').map(call => ({ callId: call.id, expression: call.sourceExpression ?? call.callee, status: call.status as 'ambiguous' | 'unresolved' | 'dynamic', reason: call.resolutionReason ?? 'resolution evidence unavailable', candidates: [...(call.candidateTargets ?? [])], location: call.location })).sort((a, b) => a.callId.localeCompare(b.callId));
-    const crossPackageFunctions = [...functions].filter(name => !byName.has(name) && reachableCalls.some(call => call.status === 'resolved' && call.target === name));
+    const localSymbols = new Set(graph.symbols);
+    const crossPackageFunctions = [...functions].filter(name => !byName.has(name) && !localSymbols.has(name) && reachableCalls.some(call => call.status === 'resolved' && call.target === name));
     const reachableCpiSites = program.securitySurface.cpiSites.filter(site => site.enclosingInstruction === instruction.name || sites.some(fn => fn.name === site.functionName));
     const cpis = reachableCpiSites.map(site => site.id ?? '');
     const pdas = program.securitySurface.pdaSites.filter(site => site.enclosingInstruction === instruction.name || sites.some(fn => fn.name === site.enclosingFunction)).map(site => site.id ?? '');

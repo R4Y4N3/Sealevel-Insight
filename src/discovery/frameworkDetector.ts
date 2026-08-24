@@ -12,7 +12,7 @@ export function detectFramework(source: string, uri: string): FrameworkEvidence[
       evidence.push({ framework, confidence, evidence: found.map(description => ({ description, location })), location });
     }
   };
-  add('anchor', 0.98, ['anchor-lang', '#[program]', '#[derive(Accounts)]']);
+  if (/anchor[-_]lang|anchor_lang::|anchor_spl::/.test(source)) add('anchor', 0.98, ['anchor-lang', 'anchor_lang', '#[program]', '#[derive(Accounts)]']);
   add('pinocchio', 0.95, ['pinocchio', 'AccountView', 'pinocchio::program_entrypoint']);
   add('native-solana', 0.9, ['solana_program', 'solana-program', 'entrypoint!', 'process_instruction']);
   add('steel', 0.8, ['steel', 'account!', 'instruction!']);

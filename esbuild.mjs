@@ -12,6 +12,8 @@ await esbuild.build({
   outfile: 'dist/extension.js',
   sourcemap: true,
   format: 'cjs',
+  inject: ['src/importMetaShim.ts'],
+  define: { 'import.meta.url': 'importMetaUrl' },
   logLevel: 'info',
 });
 
@@ -23,6 +25,8 @@ await esbuild.build({
     outfile: 'dist/cli.js',
     sourcemap: true,
     format: 'cjs',
+    inject: ['src/importMetaShim.ts'],
+    define: { 'import.meta.url': 'importMetaUrl' },
     logLevel: 'info',
   });
 

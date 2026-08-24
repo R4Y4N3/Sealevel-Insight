@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- Added complete TOML-backed Cargo workspace/package/target/dependency/feature modeling with recoverable diagnostics.
+- Added module-aware Rust symbols, conservative call resolution, cycle-safe instruction reachability, and explicit ambiguous/unresolved/dynamic coverage loss.
+- Added unified account, state, serialization, CPI, PDA, external-program, sysvar, runtime-operation, event, error, capability, and review-complexity models.
+- Deepened Anchor, native Rust, Pinocchio, Steel, and Quasar enrichment; added Codama/Shank metadata enrichment and source/IDL reconciliation.
+- Added full CLI commands/options/policy exit codes, deterministic local caches, baselines/diffs, scope configuration, duplicate hashing, and standalone offline HTML graph modes.
+- Expanded VS Code commands, Explorer hierarchy, semantic CodeLens/hovers, diagnostics, cancellation, debounced auto-analysis, bounded concurrency, and persisted cache/report behavior.
+- Added strict report-schema validation, 52 deterministic tests, packaged CLI/Extension Host integration, pinned five-framework real-world validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
+- Fixed packaged CommonJS parser initialization, root-level VS Code source discovery, workspace-relative test exclusion, scopefile merging, lexical marker counting, and percentage-policy/report rendering errors.
+
 ## 0.5.0
 
 - Added TOML-backed Cargo workspace and dependency graph primitives.

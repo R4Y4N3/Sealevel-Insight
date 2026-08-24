@@ -6,6 +6,8 @@ dist-integration/**
 node_modules/**
 *.tsbuildinfo
 .git/**
+.real-world-cache/**
+.sealevel-insight-cache/**
 .github/**
 *.vsix
 .gitignore
@@ -14,6 +16,7 @@ esbuild.mjs
 tsconfig*.json
 scripts/**
 resources/**
+target/**
 !README.md
 !CHANGELOG.md
 !LICENSE

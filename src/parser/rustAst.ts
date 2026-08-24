@@ -2,7 +2,7 @@ import { Node } from 'web-tree-sitter';
 
 export type RustNode = Node;
 
-export function descendants(node: RustNode, type: string): RustNode[] {
+export function descendants(node: RustNode, type: string | string[]): RustNode[] {
   return node.descendantsOfType(type).filter((child): child is RustNode => child !== null);
 }
 

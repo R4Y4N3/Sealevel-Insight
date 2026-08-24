@@ -4,7 +4,7 @@ import { reportHtml } from '../report/reportBuilder';
 import { isWebviewMessage } from './messageProtocol';
 
 export function showReport(report: WorkspaceReport): void {
-  const panel = vscode.window.createWebviewPanel('sealevelInsightReport', 'Sealevel Insight', vscode.ViewColumn.One, { enableScripts: true });
+  const panel = vscode.window.createWebviewPanel('sealevelInsightReport', 'Sealevel Insight', vscode.ViewColumn.One, { enableScripts: true, localResourceRoots: [] });
   const nonce = `${Date.now()}${Math.random().toString(36).slice(2)}`;
   panel.webview.html = reportHtml(report, nonce);
   panel.webview.onDidReceiveMessage(message => {

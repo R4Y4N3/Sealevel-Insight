@@ -1,0 +1,28 @@
+import { Capability, Evidence, ProgramUnit } from '../model/report';
+
+export function buildCapabilities(program: ProgramUnit, hasIdl = false): Capability[] {
+  const items: Capability[] = [];
+  const add = (id: string, label: string, evidence: Evidence[]) => { if (evidence.length) items.push({ id: `capability:${program.name}:${id}`, label, evidence }); };
+  const cpis = program.securitySurface.cpiSites;
+  const pdas = program.securitySurface.pdaSites;
+  add('pda', 'Uses PDAs', pdas.flatMap(item => item.evidence));
+  add('signer-pda', 'Uses signer PDAs', cpis.filter(item => item.pdaSigned).flatMap(item => item.evidence));
+  add('cpi', 'Uses CPIs', cpis.flatMap(item => item.evidence));
+  add('signed-cpi', 'Uses signed CPIs', cpis.filter(item => item.pdaSigned).flatMap(item => item.evidence));
+  add('dynamic-cpi', 'Uses dynamic CPIs', cpis.filter(item => item.targetKind === 'dynamic' || !item.target).flatMap(item => item.evidence));
+  for (const [kind, label] of [['system-program', 'Uses System Program'], ['spl-token', 'Uses SPL Token'], ['token-2022', 'Uses Token-2022'], ['associated-token', 'Uses Associated Token Program'], ['memo', 'Uses Memo Program']] as const) add(kind, label, cpis.filter(item => item.targetKind === kind).flatMap(item => item.evidence));
+  add('sysvars', 'Uses sysvars', (program.sysvars ?? []).flatMap(item => item.evidence));
+  add('instructions-sysvar', 'Uses Instructions sysvar', (program.sysvars ?? []).filter(item => item.name === 'Instructions').flatMap(item => item.evidence));
+  add('remaining-accounts', 'Uses remaining_accounts', program.securitySurface.remainingAccounts ? [{ description: `${program.securitySurface.remainingAccounts} remaining_accounts references` }] : []);
+  add('raw-accounts', 'Uses raw accounts', program.accounts.filter(item => item.raw).flatMap(item => item.evidence));
+  add('unchecked-accounts', 'Uses unchecked accounts', program.accounts.filter(item => item.unchecked).flatMap(item => item.evidence));
+  add('unsafe', 'Uses unsafe Rust', program.functions.filter(item => item.isUnsafe).map(item => ({ description: `unsafe function ${item.name}`, location: item.location })));
+  add('runtime', 'Uses direct runtime operations', (program.runtimeOperations ?? []).flatMap(item => item.evidence));
+  add('borsh', 'Uses Borsh', (program.stateTypes ?? []).filter(item => item.serialization.includes('borsh')).flatMap(item => item.evidence));
+  add('zero-copy', 'Uses zero-copy state', (program.stateTypes ?? []).filter(item => item.zeroCopy).flatMap(item => item.evidence));
+  add('events', 'Emits events', (program.events ?? []).filter(item => item.emissionSites.length).flatMap(item => item.evidence));
+  add('idl', 'Has IDL', hasIdl ? [{ description: 'IDL discovered and matched to source program' }] : []);
+  add('identity-conflict', 'Has program identity conflicts', program.identity?.conflicts ?? []);
+  add('unresolved-calls', 'Has unresolved calls', (program.callGraph?.calls ?? []).filter(item => item.status !== 'resolved').flatMap(item => item.evidence));
+  return items.sort((a, b) => a.id.localeCompare(b.id));
+}

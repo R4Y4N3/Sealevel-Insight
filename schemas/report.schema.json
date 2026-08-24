@@ -1,15 +1,84 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Sealevel Insight Report",
+  "$id": "https://github.com/R4Y4N3/Sealevel-Insight/schemas/report.schema.json",
+  "title": "Sealevel Insight Report 0.6.0",
   "type": "object",
   "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
   "properties": {
-    "schemaVersion": { "const": "0.5.0" },
-    "tool": { "type": "object", "required": ["name", "version"], "properties": { "name": { "const": "Sealevel Insight" }, "version": { "type": "string" } } },
-    "generatedAt": { "type": "string", "format": "date-time" },
-    "programs": { "type": "array" },
-    "files": { "type": "array" },
+    "schemaVersion": { "const": "0.6.0" },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.6.0" } },
+      "additionalProperties": false
+    },
+    "generatedAt": { "type": "string", "minLength": 1 },
+    "workspace": { "type": "object" },
+    "programs": { "type": "array", "items": { "$ref": "#/$defs/program" } },
+    "files": { "type": "array", "items": { "$ref": "#/$defs/file" } },
     "diagnostics": { "type": "array", "items": { "type": "string" } },
-    "summary": { "type": "object" }
+    "analysisDiagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
+    "coverage": { "type": "object" },
+    "reviewProfile": { "type": "array" },
+    "workspaceGraph": { "type": "object" },
+    "idl": { "type": "object" },
+    "summary": { "$ref": "#/$defs/summary" }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "required": ["uri", "startLine", "startColumn", "endLine", "endColumn"],
+      "properties": {
+        "uri": { "type": "string" }, "startLine": { "type": "integer", "minimum": 1 },
+        "startColumn": { "type": "integer", "minimum": 0 }, "endLine": { "type": "integer", "minimum": 1 },
+        "endColumn": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["uri", "lines", "codeLines", "commentLines", "blankLines", "functions", "structs", "enums", "traits", "implBlocks", "unsafeBlocks", "macroInvocations"],
+      "properties": {
+        "uri": { "type": "string" }, "lines": { "type": "integer", "minimum": 0 }, "codeLines": { "type": "integer", "minimum": 0 },
+        "commentLines": { "type": "integer", "minimum": 0 }, "blankLines": { "type": "integer", "minimum": 0 },
+        "functions": { "type": "integer", "minimum": 0 }, "structs": { "type": "integer", "minimum": 0 },
+        "enums": { "type": "integer", "minimum": 0 }, "traits": { "type": "integer", "minimum": 0 },
+        "implBlocks": { "type": "integer", "minimum": 0 }, "unsafeBlocks": { "type": "integer", "minimum": 0 },
+        "macroInvocations": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "program": {
+      "type": "object",
+      "required": ["name", "rustFiles", "functions", "instructions", "accounts", "frameworkEvidence", "securitySurface"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }, "rustFiles": { "type": "array", "items": { "$ref": "#/$defs/file" } },
+        "functions": { "type": "array" }, "instructions": { "type": "array" }, "accounts": { "type": "array" },
+        "frameworkEvidence": { "type": "array" },
+        "securitySurface": {
+          "type": "object", "required": ["cpiSites", "pdaSites"],
+          "properties": { "cpiSites": { "type": "array" }, "pdaSites": { "type": "array" } }
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["id", "severity", "category", "message"],
+      "properties": {
+        "id": { "type": "string" }, "severity": { "enum": ["info", "warning", "error"] },
+        "category": { "enum": ["parse", "cargo", "config", "identity", "idl", "invariant", "analysis"] },
+        "message": { "type": "string" }, "location": { "$ref": "#/$defs/location" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["rustFiles", "loc", "codeLoc", "blankLines", "commentLines", "functions", "instructions", "accounts", "signerSignals", "writableSignals", "rawOrUncheckedAccounts", "pdas", "cpis", "pdaSignedCpis", "unsafeBlocks"],
+      "properties": {
+        "rustFiles": { "type": "integer", "minimum": 0 }, "loc": { "type": "integer", "minimum": 0 }, "codeLoc": { "type": "integer", "minimum": 0 },
+        "blankLines": { "type": "integer", "minimum": 0 }, "commentLines": { "type": "integer", "minimum": 0 }, "functions": { "type": "integer", "minimum": 0 },
+        "instructions": { "type": "integer", "minimum": 0 }, "accounts": { "type": "integer", "minimum": 0 }, "signerSignals": { "type": "integer", "minimum": 0 },
+        "writableSignals": { "type": "integer", "minimum": 0 }, "rawOrUncheckedAccounts": { "type": "integer", "minimum": 0 }, "pdas": { "type": "integer", "minimum": 0 },
+        "cpis": { "type": "integer", "minimum": 0 }, "pdaSignedCpis": { "type": "integer", "minimum": 0 }, "unsafeBlocks": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    }
   }
 }

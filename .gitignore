@@ -8,3 +8,5 @@ coverage/
 .vscode-test/
 dist-test/
 dist-integration/
+.sealevel-insight-cache/
+.real-world-cache/

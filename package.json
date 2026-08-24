@@ -2,10 +2,15 @@
   "name": "sealevel-insight",
   "displayName": "Sealevel Insight",
   "description": "Framework-agnostic architecture, metrics, and security-surface analysis for Solana programs.",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#071A3D",
+    "theme": "dark"
+  },
   "bin": {
     "sealevel-insight": "./dist/cli.js"
   },
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "sealevel-insight",
   "license": "MIT",
   "repository": {
@@ -56,8 +61,63 @@
         "category": "Sealevel Insight"
       },
       {
+        "command": "sealevelInsight.analyzePackage",
+        "title": "Sealevel Insight: Analyze Current Package",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.analyzeFile",
+        "title": "Sealevel Insight: Analyze Current File",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.openReport",
+        "title": "Sealevel Insight: Open Report",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.openArchitecture",
+        "title": "Sealevel Insight: Open Architecture",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.openCallGraph",
+        "title": "Sealevel Insight: Open Call Graph",
+        "category": "Sealevel Insight"
+      },
+      {
         "command": "sealevelInsight.exportJson",
         "title": "Sealevel Insight: Export Analysis as JSON",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.exportMarkdown",
+        "title": "Sealevel Insight: Export Analysis as Markdown",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.exportHtml",
+        "title": "Sealevel Insight: Export Analysis as HTML",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.exportScope",
+        "title": "Sealevel Insight: Export Scope Report",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.saveBaseline",
+        "title": "Sealevel Insight: Save Baseline",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.compareBaseline",
+        "title": "Sealevel Insight: Compare with Baseline",
+        "category": "Sealevel Insight"
+      },
+      {
+        "command": "sealevelInsight.clearCache",
+        "title": "Sealevel Insight: Clear Analysis Cache",
         "category": "Sealevel Insight"
       }
     ],
@@ -113,6 +173,25 @@
           "type": "boolean",
           "default": false,
           "description": "Enable IDL discovery when supported."
+        },
+        "sealevelInsight.idlPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/target/idl/*.json",
+            "**/idl/**/*.json",
+            "**/generated/idl/**/*.json",
+            "**/codama*.json"
+          ],
+          "description": "Workspace-relative glob patterns used for offline IDL discovery."
+        },
+        "sealevelInsight.analysisConcurrency": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Maximum concurrent file reads/parses. Zero selects a bounded automatic value."
         }
       }
     }
@@ -124,12 +203,13 @@
     "build": "node esbuild.mjs",
     "build:test": "tsc -p tsconfig.test.json",
     "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.5.0.vsix",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-0.6.0.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
     "cli": "node dist/cli.js",
     "build:integration": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run package && npm run verify:vsix && npm run build:integration && node dist-integration/test/integration/runTest.js",
-    "test:real-world": "node scripts/real-world-smoke.js"
+    "test:real-world": "node scripts/real-world-smoke.js",
+    "benchmark": "npm run build && node scripts/benchmark.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -137,6 +217,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.7.1",
+    "ajv": "^8.20.0",
     "esbuild": "^0.28.2",
     "mocha": "^11.7.5",
     "source-map-support": "^0.5.21",

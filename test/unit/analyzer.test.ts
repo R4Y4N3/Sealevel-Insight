@@ -15,6 +15,7 @@ import { discoverIdls } from '../../src/idl/discovery';
 import { portableReport } from '../../src/core/serialization';
 import { buildScope } from '../../src/core/scope';
 import { diffReports } from '../../src/core/diff';
+import { validateReport } from '../../src/analysis/invariants';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -150,7 +151,8 @@ describe('Sealevel Insight analyzer', () => {
     const source = 'pub fn process_instruction(accounts: &[AccountInfo]) { let authority = &accounts[0]; if authority.is_signer { invoke(&[], &[]); } }';
     const report = await analyzeSources([{ uri: 'native-rel/lib.rs', source, packageName: 'native-rel' }], wasm);
     assert.equal(report.programs[0].relationships?.length, 1);
-    assert.equal(report.programs[0].relationships?.[0].relationship, 'unknown');
+    assert.equal(report.programs[0].relationships?.[0].relationship, 'signer');
+    assert.equal(report.programs[0].accounts.find(account => account.name === 'authority')?.index, 0);
   });
 
   it('extracts Pinocchio current-style signals', async () => {
@@ -223,7 +225,7 @@ describe('Sealevel Insight analyzer', () => {
 
   it('makes all report path fields portable without matching sibling prefixes', async () => {
     const report = await analyzeSources([{ uri: 'file:///repo/program/src/lib.rs', source: 'fn run() {}', packageName: 'program', manifestUri: '/repo/program/Cargo.toml' }], wasm);
-    report.workspaceGraph = { workspaces: [{ rootUri: '/repo', manifestUri: '/repo/Cargo.toml', members: ['/repo/program'], excluded: ['/repo/ignored'] }], packages: [], dependencyEdges: [] };
+    report.workspaceGraph = { workspaces: [{ rootUri: '/repo', manifestUri: '/repo/Cargo.toml', members: ['/repo/program'], excluded: ['/repo/ignored'], defaultMembers: ['/repo/program'] }], packages: [], dependencyEdges: [], diagnostics: [] };
     const portable = portableReport(report, '/repo');
     assert.equal(portable.files[0].uri, 'program/src/lib.rs');
     assert.equal(portable.programs[0].manifestUri, 'program/Cargo.toml');
@@ -252,5 +254,113 @@ describe('Sealevel Insight analyzer', () => {
     const after = await analyzeSources([{ uri: 'diff/lib.rs', source: 'fn added() {}', packageName: 'diff' }], wasm);
     const changed = diffReports(before, after).changedFunctions;
     assert.deepEqual(changed, [{ id: 'diff:added', after: 1 }, { id: 'diff:removed', before: 1 }]);
+  });
+
+  it('models Cargo workspace inheritance, targets, features, and target dependencies', () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["program"]\ndefault-members=["program"]\nresolver="2"\n[workspace.package]\nversion="1.2.3"\nedition="2021"\n[workspace.dependencies]\nsolana-program={version="3",features=["borsh"]}' },
+      { uri: '/repo/program/Cargo.toml', fileUris: ['/repo/program/src/custom.rs', '/repo/program/src/main.rs', '/repo/program/build.rs'], text: '[package]\nname="program"\nversion.workspace=true\nedition.workspace=true\n[lib]\npath="src/custom.rs"\ncrate-type=["cdylib","lib"]\n[[bin]]\nname="client"\npath="src/main.rs"\n[dependencies]\nsolana-program={workspace=true,default-features=false}\n[target.\'cfg(unix)\'.dev-dependencies]\nhelper={version="1",optional=true,features=["x"]}\n[features]\ndefault=["fast"]\nfast=[]' }
+    ], new Map([['/repo/program', ['entrypoint!(process_instruction);']]]));
+    const pkg = graph.packages[0];
+    assert.deepEqual(graph.workspaces[0].defaultMembers, ['/repo/program']);
+    assert.equal(graph.workspaces[0].resolver, '2');
+    assert.equal(pkg.version, '1.2.3');
+    assert.deepEqual(pkg.targets.map(target => [target.kind, target.path]), [['bin', '/repo/program/src/main.rs'], ['build-script', '/repo/program/build.rs'], ['lib', '/repo/program/src/custom.rs']]);
+    assert.deepEqual(pkg.dependencies[0].features, ['borsh']);
+    assert.equal(pkg.dependencies[0].workspaceInherited, true);
+    assert.equal(pkg.dependencies[1].targetCondition, 'cfg(unix)');
+    assert.deepEqual(pkg.features[1], { name: 'fast', enables: [], evidence: [{ description: 'Cargo feature fast' }] });
+  });
+
+  it('reports malformed Cargo manifests and missing members without aborting', () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["missing"]' },
+      { uri: '/repo/bad/Cargo.toml', text: '[package\nname=' }
+    ], new Map());
+    assert.deepEqual(graph.diagnostics.map(item => item.category), ['cargo', 'cargo']);
+    assert.ok(graph.diagnostics.some(item => item.message.includes('Invalid Cargo manifest TOML')));
+    assert.ok(graph.diagnostics.some(item => item.message.includes('matched no discovered manifest')));
+  });
+
+  it('resolves qualified cross-file calls with module-aware symbols', async () => {
+    const report = await analyzeSources([
+      { uri: 'file:///repo/src/lib.rs', source: '#[program]\npub mod p { pub fn go() { crate::helpers::helper(); } }', packageName: 'p', packageRoot: '/repo' },
+      { uri: 'file:///repo/src/helpers.rs', source: 'pub fn helper() { invoke(&[], &[]); }', packageName: 'p', packageRoot: '/repo' }
+    ], wasm);
+    const call = report.programs[0].callGraph?.calls.find(item => item.sourceExpression === 'crate::helpers::helper');
+    assert.equal(call?.status, 'resolved');
+    assert.equal(call?.target, 'crate::helpers::helper');
+    assert.equal(report.programs[0].instructions[0].reachableSurface?.cpis.length, 1);
+    assert.equal(report.programs[0].instructions[0].reachableSurface?.complete, false);
+  });
+
+  it('resolves import aliases and exposes dynamic method calls', async () => {
+    const report = await analyzeSources([{ uri: 'file:///repo/src/lib.rs', packageName: 'p', packageRoot: '/repo', source: 'mod checks { pub fn validate() {} } use crate::checks::validate as check; fn run() { check(); account.validate(); }' }], wasm);
+    const calls = report.programs[0].callGraph!.calls;
+    assert.equal(calls.find(item => item.sourceExpression === 'check')?.target, 'crate::checks::validate');
+    assert.equal(calls.find(item => item.sourceExpression === 'account.validate')?.status, 'dynamic');
+  });
+
+  it('handles recursive call cycles with deduplicated reachability', async () => {
+    const source = '#[program]\npub mod p { pub fn go() { a(); } } fn a() { b(); } fn b() { a(); }';
+    const report = await analyzeSources([{ uri: 'cycle.rs', source, packageName: 'cycle' }], wasm);
+    assert.deepEqual(report.programs[0].instructions[0].reachableSurface?.functions, ['crate::a', 'crate::b', 'crate::p::go']);
+  });
+
+  it('extracts modern Anchor account semantics and lifecycle exactly', async () => {
+    const source = '#[program]\npub mod p { pub fn create(ctx: Context<Create>) {} }\n#[derive(Accounts)]\npub struct Create<\'info> { #[account(init, payer = payer, space = 8 + Vault::INIT_SPACE, seeds = [b"vault", payer.key().as_ref()], bump, owner = crate::ID, realloc = 64, realloc::payer = payer, realloc::zero = true)] pub vault: Account<\'info, Vault>, #[account(mut)] pub payer: Signer<\'info>, #[account(executable)] pub target: UncheckedAccount<\'info> }\n#[account]\npub struct Vault { pub value: u64 }';
+    const report = await analyzeSources([{ uri: 'anchor-modern.rs', source, packageName: 'p' }], wasm);
+    const vault = report.programs[0].accounts.find(account => account.name === 'vault')!;
+    assert.equal(vault.stateType, 'Vault');
+    assert.deepEqual(vault.lifecycle, ['init', 'create', 'write', 'realloc']);
+    assert.equal(vault.ownerExpectation, 'crate::ID');
+    assert.deepEqual(vault.constraints?.map(item => item.kind), ['init', 'payer', 'space', 'seeds', 'bump', 'owner', 'realloc', 'realloc::payer', 'realloc::zero']);
+    assert.deepEqual(report.programs[0].securitySurface.pdaSites[0].seeds, ['b"vault"', 'payer.key().as_ref()']);
+  });
+
+  it('extracts state codecs, sysvars, runtime operations, events, and errors', async () => {
+    const source = '#[account(zero_copy)]\n#[derive(Pod, Zeroable)]\npub struct Vault { pub amount: u64, pub key: Pubkey }\n#[event]\npub struct Deposited { pub amount: u64 }\n#[error_code]\npub enum Error { #[msg("bad")] Bad }\nfn run() { let clock = Clock::get(); emit!(Deposited { amount: 1 }); set_return_data(&[]); }';
+    const report = await analyzeSources([{ uri: 'semantic.rs', source, packageName: 'semantic' }], wasm);
+    const program = report.programs[0];
+    assert.deepEqual(program.stateTypes?.[0].serialization, ['zero-copy']);
+    assert.equal(program.stateTypes?.[0].staticSize, 40);
+    assert.equal(program.sysvars?.[0].name, 'Clock');
+    assert.ok(program.runtimeOperations?.some(item => item.kind === 'return-data'));
+    assert.equal(program.events?.[0].emissionSites.length, 1);
+    assert.equal(program.errors?.[0].message, 'bad');
+  });
+
+  it('extracts native indexed, get, and destructured accounts with validations', async () => {
+    const source = 'pub fn process_instruction(accounts: &[AccountInfo]) { let payer = &accounts[0]; let vault = accounts.get(1).unwrap(); let [authority, token_program, ..] = accounts else { return; }; if !payer.is_signer || !vault.is_writable || !token_program.executable || vault.owner != expected { return; } vault.try_borrow_mut_data(); }';
+    const report = await analyzeSources([{ uri: 'native-accounts.rs', source, packageName: 'native' }], wasm);
+    const accounts = report.programs[0].accounts.filter(item => item.name).map(item => ({ name: item.name, index: item.index, signer: item.signer, writable: item.writable, executable: item.executable, owner: item.ownerExpectation }));
+    assert.deepEqual(accounts.slice(0, 4), [
+      { name: 'payer', index: 0, signer: true, writable: false, executable: false, owner: undefined },
+      { name: 'vault', index: 1, signer: false, writable: true, executable: false, owner: 'expected' },
+      { name: 'authority', index: 0, signer: false, writable: false, executable: false, owner: undefined },
+      { name: 'token_program', index: 1, signer: false, writable: false, executable: true, owner: undefined }
+    ]);
+  });
+
+  it('parses PDA seeds structurally and links signed CPI sites', async () => {
+    const source = 'fn run(authority: Pubkey) { let pda = Pubkey::find_program_address(&[b"vault", authority.as_ref()], &ID); invoke_signed(&ix, &accounts, &[&[b"vault", &[bump]]]); }';
+    const report = await analyzeSources([{ uri: 'pda.rs', source, packageName: 'pda' }], wasm);
+    const program = report.programs[0];
+    assert.deepEqual(program.securitySurface.pdaSites[0].seeds, ['b"vault"', 'authority.as_ref()']);
+    assert.equal(program.securitySurface.pdaSites[0].usedAsSigner, true);
+    assert.deepEqual(program.securitySurface.cpiSites[0].signerPdaIds, [program.securitySurface.pdaSites[0].id]);
+  });
+
+  it('reports detailed IDL account privilege and ordering mismatches', async () => {
+    const report = await analyzeSources([{ uri: 'anchor/lib.rs', source: await fixture('anchor-basic'), packageName: 'anchor' }], wasm);
+    const idl = normalizeIdl({ instructions: [{ name: 'initialize', accounts: [{ name: 'authority', writable: false }, { name: 'vault', signer: false }] }] })!;
+    const result = reconcileIdl(report.programs[0], idl);
+    assert.ok(result.reconciliations.some(item => item.item.endsWith('.order') && item.status === 'MISMATCH'));
+    assert.ok(result.reconciliations.some(item => item.item.endsWith('.writable') && item.status === 'MISMATCH'));
+  });
+
+  it('keeps report graph and summary invariants valid', async () => {
+    const report = await analyzeSources([{ uri: 'anchor/lib.rs', source: await fixture('anchor-basic'), packageName: 'anchor' }], wasm);
+    assert.deepEqual(validateReport(report), []);
   });
 });

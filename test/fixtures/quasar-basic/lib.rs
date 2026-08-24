@@ -1,3 +1,7 @@
 use quasar_lang::prelude::*;
-pub fn withdraw(ctx: Context<Withdraw>) { let _ = ctx; }
-pub struct Withdraw<'info> { pub authority: AccountView<'info> }
+#[program]
+pub mod vault {
+    pub fn withdraw(ctx: Context<Withdraw>) { let _ = ctx; }
+}
+#[derive(Accounts)]
+pub struct Withdraw<'info> { pub authority: &'info AccountView }

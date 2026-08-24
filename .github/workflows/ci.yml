@@ -22,3 +22,9 @@ jobs:
       - run: npm run build
       - run: npm run package
       - run: npm run verify:vsix
+      - name: Packaged VSIX integration (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:integration
+      - name: Packaged VSIX integration
+        if: runner.os != 'Linux'
+        run: npm run test:integration

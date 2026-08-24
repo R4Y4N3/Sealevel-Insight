@@ -1,4 +1,4 @@
-import { AccountInfo, ArchitectureEdge, ArchitectureNode, CpiSite, Evidence, FileMetric, FunctionMetric, InstructionInfo, PdaSite, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
+import { AccountInfo, ArchitectureEdge, ArchitectureNode, Evidence, FileMetric, FunctionMetric, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
 import { parseRust, ParsedRustFile } from '../parser/rustParser';
 import { descendants, field, nodeText, RustNode } from '../parser/rustAst';
 import { sourceComplexity } from './complexity';
@@ -35,15 +35,20 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   const list = [...programs.values()];
   for (const program of list) {
     program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions);
+    buildArchitecture(program);
+    buildExternalPrograms(program);
     propagateReachableSurface(program);
+    program.reviewHotspots = reviewHotspotsFor(program);
   }
   const allSurface = list.map(program => program.securitySurface);
+  const reviewProfile = list.flatMap(program => program.reviewHotspots ?? []).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   return {
     schemaVersion: '0.5.0', tool: { name: 'Sealevel Insight', version: '0.5.0' },
     generatedAt: new Date().toISOString(),
     programs: list,
     files,
     diagnostics,
+    reviewProfile,
     workspaceGraph: inputs.find(input => input.workspaceGraph)?.workspaceGraph,
     coverage: coverageFor(list, files),
     summary: {
@@ -59,6 +64,13 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   const root = file.tree!.rootNode;
   const source = file.source;
   const uri = file.uri;
+  for (const match of source.matchAll(/declare_id!\s*\(\s*"([^"]+)"\s*\)/g)) {
+    const location = offsetLocation(uri, source, match.index, match.index + match[0].length);
+    const evidence = { description: `declare_id! program address ${match[1]}`, location };
+    program.identity ??= { programId: match[1], sources: [], conflicts: [] };
+    if (program.identity.programId && program.identity.programId !== match[1]) program.identity.conflicts.push(evidence);
+    else { program.identity.programId = match[1]; program.identity.sources.push(evidence); }
+  }
   program.frameworkEvidence = dedupeEvidence([...program.frameworkEvidence, ...detectFramework(source, uri), ...enrichPinocchio(source), ...enrichNative(source), ...enrichSteel(source), ...enrichQuasar(source)]);
   const anchor = enrichAnchor(root, uri);
   program.instructions.push(...anchor.instructions);
@@ -102,7 +114,6 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   program.securitySurface.manualSerialization += (source.match(/try_from_slice|serialize|deserialize|borsh/g) ?? []).length;
   program.securitySurface.cpiSites = [...new Map(program.securitySurface.cpiSites.map(site => [site.id, site])).values()];
   program.securitySurface.pdaSites = [...new Map(program.securitySurface.pdaSites.map(site => [site.id, site])).values()];
-  buildArchitecture(program);
 }
 
 function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit, source: string, uri: string): void {
@@ -174,10 +185,13 @@ function propagateReachableSurface(program: ProgramUnit): void {
       queue.push(...(edges.get(current) ?? []).filter(next => !functions.has(next)));
     }
     const sites = [...functions].map(name => byName.get(name)).filter((fn): fn is FunctionMetric => !!fn);
-    const cpis = program.securitySurface.cpiSites.filter(site => sites.some(fn => fn.name === site.functionName)).map(site => site.id ?? '');
+    const reachableCpiSites = program.securitySurface.cpiSites.filter(site => sites.some(fn => fn.name === site.functionName));
+    const cpis = reachableCpiSites.map(site => site.id ?? '');
     const pdas = program.securitySurface.pdaSites.filter(site => sites.some(fn => fn.name === site.enclosingFunction)).map(site => site.id ?? '');
-    const accountIds = program.relationships?.filter(rel => rel.instructionId === instruction.id).map(rel => rel.accountId) ?? [];
-    instruction.reachableSurface = { functions: [...functions].sort(), accounts: [...new Set(accountIds)].sort(), cpis: [...new Set(cpis)].sort(), pdas: [...new Set(pdas)].sort(), externalPrograms: [] };
+    const accountIds = program.relationships?.filter(rel => rel.instructionId === (instruction.id ?? instruction.name)).map(rel => rel.accountId) ?? [];
+    const externalPrograms = reachableCpiSites.map(site => `external:${site.target ?? site.invocationApi ?? 'unknown'}`);
+    for (const external of program.externalPrograms ?? []) if (externalPrograms.includes(external.id)) external.calledByInstructions = [...new Set([...external.calledByInstructions, instruction.id ?? instruction.name])].sort();
+    instruction.reachableSurface = { functions: [...functions].sort(), accounts: [...new Set(accountIds)].sort(), cpis: [...new Set(cpis)].sort(), pdas: [...new Set(pdas)].sort(), externalPrograms: [...new Set(externalPrograms)].sort() };
     for (const fn of sites) { fn.reachableFunctions = [...functions].sort(); fn.cpiCount = cpis.length; fn.pdaCount = pdas.length; }
   }
 }
@@ -235,14 +249,14 @@ function buildArchitecture(program: ProgramUnit): void {
       existing.writable ||= account.writable;
       existing.unchecked ||= account.unchecked;
       existing.constraints = [...(existing.constraints ?? []), ...(account.constraints ?? [])];
-    } else uniqueAccounts.set(key, { ...account, id: `account:${program.name}:${key}` });
+    } else uniqueAccounts.set(key, { ...account, id: account.id ?? `account:${program.name}:${key}` });
   }
   program.accounts = [...uniqueAccounts.values()];
   const nodes: ArchitectureNode[] = [{ id: `program:${program.name}`, type: 'program', label: program.name }];
   const edges: ArchitectureEdge[] = [];
   const relationships = program.relationships ?? [];
   for (const instruction of program.instructions) {
-    const instructionId = `instruction:${program.name}:${instruction.name}`;
+    const instructionId = architectureInstructionId(program, instruction);
     nodes.push({ id: instructionId, type: 'instruction', label: instruction.name, location: instruction.location });
     edges.push({ source: `program:${program.name}`, target: instructionId, type: 'uses' });
     if (instruction.contextType) {
@@ -259,18 +273,59 @@ function buildArchitecture(program: ProgramUnit): void {
     }
   }
   for (const cpi of program.securitySurface.cpiSites) {
-    const target = cpi.target ?? 'external-program';
+    const target = cpi.target ?? cpi.invocationApi ?? 'unknown';
     const targetId = `external:${target}`;
     if (!nodes.some(node => node.id === targetId)) nodes.push({ id: targetId, type: 'external-program', label: target, location: cpi.location });
     const instruction = program.instructions.find(item => item.functionName === cpi.functionName);
-    edges.push({ source: instruction ? `instruction:${program.name}:${instruction.name}` : `program:${program.name}`, target: targetId, type: 'cpi' });
+    edges.push({ source: instruction ? architectureInstructionId(program, instruction) : `program:${program.name}`, target: targetId, type: 'cpi' });
   }
   for (const pda of program.securitySurface.pdaSites) {
     const pdaId = pda.id ?? `pda:${pda.location.uri}:${pda.location.startLine}`;
     nodes.push({ id: pdaId, type: 'pda', label: 'PDA', location: pda.location });
     const instruction = program.instructions.find(item => item.name === pda.enclosingInstruction || item.functionName === pda.enclosingFunction);
-    edges.push({ source: instruction ? `instruction:${program.name}:${instruction.name}` : `program:${program.name}`, target: pdaId, type: 'derives' });
+    edges.push({ source: instruction ? architectureInstructionId(program, instruction) : `program:${program.name}`, target: pdaId, type: 'derives' });
   }
   program.architecture = { nodes: [...new Map(nodes.map(node => [node.id, node])).values()], edges: [...new Map(edges.map(edge => [`${edge.source}:${edge.target}:${edge.type}`, edge])).values()] };
   program.relationships = [...new Map(relationships.map(item => [`${item.instructionId}:${item.accountId}:${item.relationship}`, item])).values()];
+}
+
+function architectureInstructionId(program: ProgramUnit, instruction: ProgramUnit['instructions'][number]): string {
+  return instruction.id ?? `instruction:${program.name}:${instruction.name}:${instruction.location.uri}:${instruction.location.startLine}`;
+}
+
+function buildExternalPrograms(program: ProgramUnit): void {
+  const grouped = new Map<string, NonNullable<ProgramUnit['externalPrograms']>[number]>();
+  for (const cpi of program.securitySurface.cpiSites) {
+    const name = cpi.target ?? cpi.invocationApi ?? 'unknown';
+    const id = `external:${name}`;
+    const instruction = program.instructions.find(item => item.functionName === cpi.functionName || item.handler === cpi.functionName);
+    const instructionId = instruction?.id ?? instruction?.name;
+    const existing = grouped.get(id) ?? { id, name, kind: cpi.targetKind ?? 'unknown', locations: [], calledByInstructions: [], cpiCount: 0, signedCpiCount: 0, confidence: cpi.confidence, evidence: [] };
+    existing.locations.push(cpi.location);
+    if (instructionId) existing.calledByInstructions.push(instructionId);
+    existing.cpiCount++;
+    if (cpi.pdaSigned) existing.signedCpiCount++;
+    existing.confidence = Math.max(existing.confidence, cpi.confidence);
+    existing.evidence.push(...cpi.evidence);
+    grouped.set(id, existing);
+  }
+  program.externalPrograms = [...grouped.values()].map(item => ({ ...item, locations: [...new Map(item.locations.map(location => [`${location.uri}:${location.startLine}:${location.startColumn}`, location])).values()], calledByInstructions: [...new Set(item.calledByInstructions)].sort(), evidence: [...new Map(item.evidence.map(evidence => [`${evidence.description}:${evidence.location?.uri ?? ''}:${evidence.location?.startLine ?? ''}`, evidence])).values()] }));
+}
+
+function reviewHotspotsFor(program: ProgramUnit): NonNullable<ProgramUnit['reviewHotspots']> {
+  const hotspots: NonNullable<ProgramUnit['reviewHotspots']> = [];
+  for (const fn of program.functions) {
+    const reasons: string[] = [];
+    if (fn.complexity >= 10) reasons.push(`cyclomatic complexity ${fn.complexity}`);
+    if (fn.isUnsafe) reasons.push('unsafe function');
+    const cpis = program.securitySurface.cpiSites.filter(site => site.functionName === fn.name).length;
+    const pdas = program.securitySurface.pdaSites.filter(site => site.enclosingFunction === fn.name).length;
+    if (cpis >= 2) reasons.push(`${cpis} CPI sites`);
+    if (pdas >= 2) reasons.push(`${pdas} PDA derivations`);
+    if (reasons.length) hotspots.push({ id: `hotspot:function:${fn.qualifiedName ?? fn.name}:${fn.location.uri}:${fn.location.startLine}`, label: fn.name, score: fn.complexity + cpis * 3 + pdas * 2 + (fn.isUnsafe ? 8 : 0), reasons, location: fn.location });
+  }
+  for (const account of program.accounts.filter(item => item.unchecked || /AccountInfo|AccountView/.test(item.type))) {
+    hotspots.push({ id: `hotspot:account:${account.id ?? `${account.location.uri}:${account.location.startLine}`}`, label: account.name ?? account.type, score: 6 + (account.writable ? 3 : 0) + (account.signer ? 2 : 0), reasons: [account.unchecked ? 'unchecked account type' : 'raw account type', ...(account.writable ? ['writable account signal'] : []), ...(account.signer ? ['signer account signal'] : [])], location: account.location });
+  }
+  return [...new Map(hotspots.map(item => [item.id, item])).values()].sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
 }

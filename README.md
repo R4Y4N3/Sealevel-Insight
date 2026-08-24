@@ -88,7 +88,7 @@ VS Code report or CLI export
 
 LOC is physical source lines. nSLOC is the number of lines containing code outside whitespace and comments. Rust block comments are nested-aware, and comment-like text inside strings is not treated as a comment. Source-level cyclomatic complexity is `1 + decision points`, counting `if`, loops, match arms, and boolean decision operators.
 
-Current Review Surface includes raw or unchecked accounts, signer and writable signals, owner/address checks, remaining accounts, unsafe code, serialization, reallocations, CPIs, and PDA derivations. These are review signals, not vulnerability findings.
+Current Review Surface includes raw or unchecked accounts, signer and writable signals, owner/address checks, remaining accounts, unsafe code, serialization, reallocations, CPIs, and PDA derivations. The report ranks evidence-backed function and account review hotspots; these are review signals, not vulnerability findings.
 
 Semantic Coverage reports denominators for parsed files, resolved instruction contexts, CPI targets, and PDA seeds. Unknown and dynamic results remain explicit.
 
@@ -98,15 +98,15 @@ Scope analysis hashes normalized file contents with SHA-256, records in-scope an
 
 ## Graphs and IDL
 
-The current architecture graph records evidence-backed program, instruction, account, PDA, and external-program relationships. The report also exposes conservative direct-call graph and IDL normalization/reconciliation data. Full workspace IDL discovery and reachable-surface propagation remain future work.
+The current architecture graph records evidence-backed program, instruction, account, PDA, and external-program relationships. The report also exposes a conservative direct-call graph, reachable instruction surfaces, offline workspace IDL discovery, and source/IDL reconciliation data.
 
 ## Configuration
 
-Implemented settings include `sealevelInsight.includePatterns`, `excludePatterns`, `showCodeLens`, `maxFileSize`, `autoAnalyze`, `includeTests`, and `enableIdlAnalysis`. The first two currently control workspace source discovery; other settings are conservative extension configuration for incremental implementation.
+Implemented settings include `sealevelInsight.includePatterns`, `excludePatterns`, `showCodeLens`, `maxFileSize`, `autoAnalyze`, `includeTests`, and `enableIdlAnalysis`.
 
 ## Privacy and limitations
 
-Analysis is local and deterministic. There is no telemetry, source upload, remote API, RPC, or AI integration. There is no vulnerability detector, severity system, deployed-binary analysis, full IDL discovery/reconciliation workflow, complete Cargo workspace resolver, reachable interprocedural surface propagation, Solang parser, sBPF parser, or Marketplace publication automation.
+Analysis is local and deterministic. There is no telemetry, source upload, remote API, RPC, or AI integration. There is no vulnerability detector, severity system, deployed-binary analysis, Solang parser, sBPF parser, or Marketplace publication automation. Call-graph and Cargo/IDL resolution are intentionally conservative and keep unresolved results explicit.
 
 ## Roadmap
 

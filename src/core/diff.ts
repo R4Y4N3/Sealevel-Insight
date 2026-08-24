@@ -8,7 +8,11 @@ export function diffReports(before: WorkspaceReport, after: WorkspaceReport): Re
   const changedFunctions: ReportDiff['changedFunctions'] = [];
   for (const program of after.programs) for (const fn of program.functions) {
     const old = beforePrograms.get(program.name)?.functions.find(item => item.name === fn.name);
-    if (old && old.complexity !== fn.complexity) changedFunctions.push({ id: `${program.name}:${fn.name}`, before: old.complexity, after: fn.complexity });
+    if (!old) changedFunctions.push({ id: `${program.name}:${fn.name}`, after: fn.complexity });
+    else if (old.complexity !== fn.complexity) changedFunctions.push({ id: `${program.name}:${fn.name}`, before: old.complexity, after: fn.complexity });
+  }
+  for (const program of before.programs) for (const fn of program.functions) {
+    if (!afterPrograms.get(program.name)?.functions.some(item => item.name === fn.name)) changedFunctions.push({ id: `${program.name}:${fn.name}`, before: fn.complexity });
   }
   return { summary: { codeLoc: after.summary.codeLoc - before.summary.codeLoc, functions: after.summary.functions - before.summary.functions, instructions: after.summary.instructions - before.summary.instructions, cpis: after.summary.cpis - before.summary.cpis, pdas: after.summary.pdas - before.summary.pdas }, addedPrograms: [...afterPrograms.keys()].filter(name => !beforePrograms.has(name)), removedPrograms: [...beforePrograms.keys()].filter(name => !afterPrograms.has(name)), changedFunctions };
 }

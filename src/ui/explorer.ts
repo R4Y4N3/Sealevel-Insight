@@ -9,19 +9,43 @@ export class InsightExplorer implements vscode.TreeDataProvider<Item> {
   getTreeItem(item: Item): vscode.TreeItem { return item; }
   getChildren(element?: Item): Item[] {
     if (!this.report) return [new Item('Run Analyze Workspace first', vscode.TreeItemCollapsibleState.None)];
-    if (!element) return [new Item('Programs', vscode.TreeItemCollapsibleState.Expanded, 'programs'), new Item(`Review Hotspots (${this.report.reviewProfile?.length ?? 0})`, vscode.TreeItemCollapsibleState.None)];
-    if (element.kind !== 'programs') return [];
-    return this.report.programs.map(program => new Item(program.name, vscode.TreeItemCollapsibleState.Collapsed, 'program'));
+    if (!element) return [new Item('Programs', vscode.TreeItemCollapsibleState.Expanded, 'programs'), new Item(`Review Hotspots (${this.report.reviewProfile?.length ?? 0})`, vscode.TreeItemCollapsibleState.Collapsed, 'hotspots')];
+    if (element.kind === 'programs') return this.report.programs.map(program => new Item(program.name, vscode.TreeItemCollapsibleState.Collapsed, 'program', program.name));
+    if (element.kind === 'hotspots') return this.report.programs.flatMap(program => (program.reviewHotspots ?? []).map(hotspot => {
+      const item = hotspot.location ? Item.source(`${program.name}: ${hotspot.label} (${hotspot.score})`, 'hotspot', program.name, hotspot.location) : new Item(`${program.name}: ${hotspot.label} (${hotspot.score})`, vscode.TreeItemCollapsibleState.None, 'hotspot', program.name);
+      item.tooltip = hotspot.reasons.join(', ');
+      return item;
+    }));
+    const program = this.report.programs.find(item => item.name === element.programName);
+    if (!program) return [];
+    if (element.kind === 'program') return [
+      new Item(`Instructions (${program.instructions.length})`, vscode.TreeItemCollapsibleState.Collapsed, 'instructions', program.name),
+      new Item(`Accounts (${program.accounts.length})`, vscode.TreeItemCollapsibleState.Collapsed, 'accounts', program.name),
+      new Item(`Functions (${program.functions.length})`, vscode.TreeItemCollapsibleState.Collapsed, 'functions', program.name)
+    ];
+    if (element.kind === 'instructions') return program.instructions.map(item => Item.source(item.name, 'instruction', program.name, item.location));
+    if (element.kind === 'accounts') return program.accounts.map(item => Item.source(item.name ?? item.type, 'account', program.name, item.location));
+    if (element.kind === 'functions') return program.functions.map(item => Item.source(item.name, 'function', program.name, item.location));
+    return [];
   }
 }
 
 export class Item extends vscode.TreeItem {
-  constructor(label: string, state: vscode.TreeItemCollapsibleState, public readonly kind?: string) { super(label, state); this.contextValue = kind; }
+  constructor(label: string, state: vscode.TreeItemCollapsibleState, public readonly kind?: string, public readonly programName?: string) { super(label, state); this.contextValue = kind; }
+  static source(label: string, kind: string, programName: string, location: import('../model/sourceLocation').SourceLocation): Item {
+    const item = new Item(label, vscode.TreeItemCollapsibleState.None, kind, programName);
+    const uri = vscode.Uri.parse(location.uri);
+    item.command = { command: 'vscode.open', title: 'Open source', arguments: [uri, { selection: new vscode.Range(location.startLine - 1, location.startColumn, location.endLine - 1, location.endColumn) }] };
+    item.resourceUri = uri;
+    return item;
+  }
 }
 
 export class InsightCodeLens implements vscode.CodeLensProvider {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this.changed.event;
   private report?: WorkspaceReport;
-  setReport(report: WorkspaceReport): void { this.report = report; }
+  setReport(report: WorkspaceReport): void { this.report = report; this.changed.fire(); }
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     if (!this.report || !vscode.workspace.getConfiguration('sealevelInsight').get<boolean>('showCodeLens', true)) return [];
     const functions = this.report.programs.flatMap(program => program.functions.filter(fn => fn.location.uri === document.uri.toString() && this.report!.programs.some(item => item.instructions.some(instruction => instruction.functionName === fn.name))));

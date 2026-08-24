@@ -1,16 +1,20 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { analyzeSources } from '../../src/analysis/analyzer';
 import { classifyPackage } from '../../src/discovery/cargoDiscovery';
 import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
 import { enrichSteel } from '../../src/adapters/steelAdapter';
 import { enrichQuasar } from '../../src/adapters/quasarAdapter';
-import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
+import { normalizeIdl, reconcileIdl, reconcileIdls } from '../../src/idl/reconciliation';
 import { parseRust } from '../../src/parser/rustParser';
 import { buildCallGraph } from '../../src/analysis/callGraph';
 import { discoverIdls } from '../../src/idl/discovery';
+import { portableReport } from '../../src/core/serialization';
+import { buildScope } from '../../src/core/scope';
+import { diffReports } from '../../src/core/diff';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -170,5 +174,83 @@ describe('Sealevel Insight analyzer', () => {
     const report = await analyzeSources([{ uri: 'program/lib.rs', source: 'pub fn handler() {}', packageName: 'program', workspaceGraph: graph }], wasm);
     assert.equal(report.workspaceGraph?.packages[0].name, 'program');
     assert.equal(report.workspaceGraph?.workspaces[0].members[0], '/repo/program');
+  });
+
+  it('preserves account relationship IDs in architecture edges', async () => {
+    const report = await analyzeSources([{ uri: 'anchor/lib.rs', source: await fixture('anchor-basic'), packageName: 'anchor' }], wasm);
+    const program = report.programs[0];
+    const accountIds = new Set(program.accounts.map(account => account.id));
+    const relationship = program.relationships?.find(item => accountIds.has(item.accountId));
+    assert.ok(relationship);
+    assert.ok(program.architecture?.edges.some(edge => edge.target === relationship.accountId && ['reads', 'writes', 'signs'].includes(edge.type)));
+  });
+
+  it('does not resolve ambiguous short function names', async () => {
+    const source = 'mod a { fn helper() {} } mod b { fn helper() {} } fn handler() { helper(); }';
+    const report = await analyzeSources([{ uri: 'ambiguous/lib.rs', source, packageName: 'ambiguous' }], wasm);
+    assert.equal(report.programs[0].callGraph?.calls.find(call => call.callee === 'helper')?.resolved, false);
+  });
+
+  it('builds external program summaries and reachable CPI links', async () => {
+    const source = '#[program]\npub mod p { pub fn go() { helper(); } }\nfn helper() { invoke_signed(&[], &[], &[]); }';
+    const report = await analyzeSources([{ uri: 'external/lib.rs', source, packageName: 'external' }], wasm);
+    const program = report.programs[0];
+    assert.equal(program.externalPrograms?.[0].signedCpiCount, 1);
+    assert.deepEqual(program.instructions[0].reachableSurface?.externalPrograms, [program.externalPrograms?.[0].id]);
+  });
+
+  it('extracts program identity conflicts and review hotspots', async () => {
+    const source = 'declare_id!("111"); declare_id!("222"); pub unsafe fn risky(account: AccountInfo) { if true { if true { invoke(&[], &[]); invoke(&[], &[]); } } }';
+    const report = await analyzeSources([{ uri: 'identity/lib.rs', source, packageName: 'identity' }], wasm);
+    assert.equal(report.programs[0].identity?.programId, '111');
+    assert.equal(report.programs[0].identity?.conflicts.length, 1);
+    assert.ok((report.reviewProfile?.length ?? 0) > 0);
+    assert.equal(report.programs[0].reviewHotspots?.[0].location?.uri, 'identity/lib.rs');
+  });
+
+  it('reconciles each IDL with its matching source program', () => {
+    const location = { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 };
+    const programs = [
+      { name: 'vault-one', rustFiles: [], functions: [], instructions: [{ name: 'deposit', location, confidence: 1, evidence: [] }], accounts: [], frameworkEvidence: [], securitySurface: { signerSignals: 0, writableSignals: 0, ownerValidationSignals: 0, addressValidationSignals: 0, remainingAccounts: 0, rawOrUncheckedAccounts: 0, manualAccountIteration: 0, unsafeBlocks: 0, manualSignerChecks: 0, manualOwnerChecks: 0, manualWritableChecks: 0, manualAddressChecks: 0, manualSerialization: 0, reallocOperations: 0, unsafeFunctions: 0, cpiSites: [], pdaSites: [] } },
+      { name: 'vault-two', rustFiles: [], functions: [], instructions: [{ name: 'withdraw', location, confidence: 1, evidence: [] }], accounts: [], frameworkEvidence: [], securitySurface: { signerSignals: 0, writableSignals: 0, ownerValidationSignals: 0, addressValidationSignals: 0, remainingAccounts: 0, rawOrUncheckedAccounts: 0, manualAccountIteration: 0, unsafeBlocks: 0, manualSignerChecks: 0, manualOwnerChecks: 0, manualWritableChecks: 0, manualAddressChecks: 0, manualSerialization: 0, reallocOperations: 0, unsafeFunctions: 0, cpiSites: [], pdaSites: [] } }
+    ];
+    const result = reconcileIdls(programs, [
+      { sourceUri: 'file:///target/idl/vault_one.json', instructions: [{ name: 'deposit', accounts: [] }] },
+      { sourceUri: 'file:///target/idl/vault_two.json', instructions: [{ name: 'withdraw', accounts: [] }] }
+    ]);
+    assert.deepEqual(result.reconciliations.map(item => item.status), ['MATCHED', 'MATCHED']);
+  });
+
+  it('makes all report path fields portable without matching sibling prefixes', async () => {
+    const report = await analyzeSources([{ uri: 'file:///repo/program/src/lib.rs', source: 'fn run() {}', packageName: 'program', manifestUri: '/repo/program/Cargo.toml' }], wasm);
+    report.workspaceGraph = { workspaces: [{ rootUri: '/repo', manifestUri: '/repo/Cargo.toml', members: ['/repo/program'], excluded: ['/repo/ignored'] }], packages: [], dependencyEdges: [] };
+    const portable = portableReport(report, '/repo');
+    assert.equal(portable.files[0].uri, 'program/src/lib.rs');
+    assert.equal(portable.programs[0].manifestUri, 'program/Cargo.toml');
+    assert.equal(portable.workspaceGraph?.workspaces[0].rootUri, '.');
+    assert.deepEqual(portable.workspaceGraph?.workspaces[0].members, ['program']);
+    const outside = portableReport({ ...report, files: [{ ...report.files[0], uri: 'file:///repo-sibling/lib.rs' }] }, '/repo');
+    assert.equal(outside.files[0].uri, 'file:///repo-sibling/lib.rs');
+  });
+
+  it('includes root-level files in the default scope glob', async () => {
+    const scopeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-scope-'));
+    await fs.writeFile(path.join(scopeRoot, 'root.rs'), 'fn root() {}');
+    await fs.mkdir(path.join(scopeRoot, 'generated'));
+    await fs.writeFile(path.join(scopeRoot, 'generated', 'copy.rs'), 'fn root() {}');
+    try {
+      const scope = await buildScope(scopeRoot);
+      assert.deepEqual(scope.inScope, ['root.rs']);
+      assert.equal(scope.files.find(file => file.path === 'generated/copy.rs')?.duplicateOf, 'root.rs');
+    } finally {
+      await fs.rm(scopeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports added and removed functions in report diffs', async () => {
+    const before = await analyzeSources([{ uri: 'diff/lib.rs', source: 'fn removed() {}', packageName: 'diff' }], wasm);
+    const after = await analyzeSources([{ uri: 'diff/lib.rs', source: 'fn added() {}', packageName: 'diff' }], wasm);
+    const changed = diffReports(before, after).changedFunctions;
+    assert.deepEqual(changed, [{ id: 'diff:added', after: 1 }, { id: 'diff:removed', before: 1 }]);
   });
 });

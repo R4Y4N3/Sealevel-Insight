@@ -14,7 +14,8 @@ export async function scanWorkspace(): Promise<RustSourceInput[]> {
   const manifests = await vscode.workspace.findFiles('**/Cargo.toml', exclude);
   const packages = new Map(await Promise.all(manifests.map(async uri => [path.dirname(uri.fsPath), { uri, manifest: await readManifest(uri) }] as const)));
   const sourceByDirectory = new Map<string, string[]>();
-  const maxFileSize = Math.max(1, vscode.workspace.getConfiguration('sealevelInsight').get<number>('maxFileSize', 5242880));
+  const configuredMaxFileSize = vscode.workspace.getConfiguration('sealevelInsight').get<number>('maxFileSize', 5242880);
+  const maxFileSize = Number.isFinite(configuredMaxFileSize) && configuredMaxFileSize > 0 ? configuredMaxFileSize : 5242880;
   const includeTests = vscode.workspace.getConfiguration('sealevelInsight').get<boolean>('includeTests', false);
   const results: Array<RustSourceInput | undefined> = await Promise.all(uris.map(async uri => {
     const stat = await vscode.workspace.fs.stat(uri);

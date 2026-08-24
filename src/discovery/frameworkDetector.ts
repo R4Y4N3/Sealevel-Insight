@@ -1,4 +1,4 @@
-import { FrameworkEvidence, Evidence } from '../model/report';
+import { FrameworkEvidence } from '../model/report';
 
 export function detectFramework(source: string, uri: string): FrameworkEvidence[] {
   const evidence: FrameworkEvidence[] = [];

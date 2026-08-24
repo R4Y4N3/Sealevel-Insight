@@ -16,7 +16,7 @@ export function buildCargoGraph(manifests: ManifestInput[], sourceByDirectory: M
     const excluded = strings(workspace.exclude).flatMap(pattern => expandMembers(path.dirname(root.uri), pattern, packageInputs));
     workspaces.push({ rootUri: path.dirname(root.uri), manifestUri: root.uri, members: members.filter(member => !excluded.includes(member)).sort(), excluded: excluded.sort() });
   }
-  const packages = parsed.filter(item => item.data.package).map(item => makePackage(item, packageInputs, sourceByDirectory));
+  const packages = parsed.filter(item => item.data.package).map(item => makePackage(item, sourceByDirectory));
   const packageIds = new Map(packages.map(item => [item.rootUri, item.id]));
   for (const pkg of packages) for (const dependency of pkg.dependencies) if (dependency.path) dependency.internalPackageId = packageIds.get(path.resolve(pkg.rootUri, dependency.path));
   const dependencyEdges: WorkspaceGraph['dependencyEdges'] = [];
@@ -26,7 +26,7 @@ export function buildCargoGraph(manifests: ManifestInput[], sourceByDirectory: M
   return { workspaces, packages, dependencyEdges: dedupeEdges(dependencyEdges) };
 }
 
-function makePackage(item: ParseResult, all: Map<string, ParseResult>, sources: Map<string, string[]>): CargoPackage {
+function makePackage(item: ParseResult, sources: Map<string, string[]>): CargoPackage {
   const data = item.data;
   const packageData = object(data.package);
   const name = stringValue(packageData.name) ?? path.basename(item.uri);

@@ -1,5 +1,5 @@
 import { AccountInfo, FrameworkEvidence, InstructionInfo } from '../model/report';
-import { RustNode, descendants, field, nodeText } from '../parser/rustAst';
+import { RustNode, descendants } from '../parser/rustAst';
 
 export function enrichSteel(source: string): FrameworkEvidence[] {
   const evidence = ['steel', 'account!', 'instruction!', 'entrypoint!', 'process_instruction'].filter(pattern => source.includes(pattern));

@@ -8,5 +8,8 @@ export function isWebviewMessage(value: unknown): value is WebviewMessage {
   const location = message.location as Record<string, unknown> | undefined;
   return message.type === 'openSource' && !!location && typeof location.uri === 'string'
     && Number.isInteger(location.startLine) && Number.isInteger(location.startColumn)
-    && Number.isInteger(location.endLine) && Number.isInteger(location.endColumn);
+    && Number.isInteger(location.endLine) && Number.isInteger(location.endColumn)
+    && (location.startLine as number) >= 1 && (location.endLine as number) >= (location.startLine as number)
+    && (location.startColumn as number) >= 0 && (location.endColumn as number) >= 0
+    && ((location.endLine as number) > (location.startLine as number) || (location.endColumn as number) >= (location.startColumn as number));
 }

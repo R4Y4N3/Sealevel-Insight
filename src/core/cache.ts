@@ -4,8 +4,8 @@ import * as path from 'node:path';
 import { RustSourceInput } from '../analysis/analyzer';
 import { WorkspaceReport } from '../model/report';
 
-export const CACHE_FORMAT_VERSION = '5';
-export const ANALYZER_VERSION_FINGERPRINT = 'rust-grammar:0.24.0;web-tree-sitter:0.25.10;framework-adapters:0.6.0;audit-products:1;reachability:2;witness-paths:1;compilation-profile:1;dispatch-indirect-calls:2';
+export const CACHE_FORMAT_VERSION = '6';
+export const ANALYZER_VERSION_FINGERPRINT = 'rust-grammar:0.24.0;web-tree-sitter:0.25.10;framework-adapters:0.6.0;audit-products:1;reachability:2;witness-paths:1;compilation-profile:1;dispatch-indirect-calls:2;state-account-dataflow:2.1;pinocchio-account-view:0.11;quasar-framework-abi:2;steel-semantics:2';
 
 export function analysisCacheKey(sources: RustSourceInput[], config: unknown): string {
   const hash = createHash('sha256');

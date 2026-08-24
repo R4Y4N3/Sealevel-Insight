@@ -23,6 +23,7 @@ import { mapConcurrent } from '../utils/concurrency';
 import { refreshAuditProducts } from './auditProducts';
 import { analyzeConditionalCompilation, CfgFileAnalysis } from './cfg';
 import { attachReachabilityWitnesses } from './reachabilityWitness';
+import { enrichStateDataflow } from './stateDataflow';
 
 export interface RustSourceInput { uri: string; source: string; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
 export interface AnalysisOptions { compilationProfile?: CompilationProfile; }
@@ -87,9 +88,11 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     }
     linkFrameworkPdas(program);
     resolveInstructionAccounts(program);
-    buildArchitecture(program);
     buildExternalPrograms(program);
     propagateReachableSurface(program);
+    enrichStateDataflow((parsedByPackage.get(program.name) ?? []).map(item => ({ uri: item.uri, root: item.root })), program);
+    resolveInstructionAccounts(program);
+    buildArchitecture(program);
     linkReachableSemantics(program);
   }
   propagateCrossPackageSurfaces(list);
@@ -235,12 +238,13 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     for (const [framework, semanticAccounts, semanticInstructions] of [['Anchor', anchor.accounts, anchor.instructions], ['Quasar', quasar.accounts, quasar.instructions]] as const) for (const account of semanticAccounts) {
       const seeds = account.constraints?.filter(constraint => constraint.kind === 'seeds').flatMap(constraint => { const expression = constraint.expression ?? ''; return expression.startsWith('[') && expression.endsWith(']') ? splitRustExpressions(expression.slice(1, -1)) : [expression]; });
       if (seeds?.length) { const id = `pda:${account.id}`; account.pdaId = id; program.securitySurface.pdaSites.push({ id, location: account.location, seeds, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, relatedAccountId: account.id, enclosingInstruction: semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: `${framework} account PDA constraint`, location: account.location }], confidence: 0.95 }); }
-      const initConstraint = account.constraints?.find(constraint => constraint.kind === 'init' || constraint.kind === 'init_if_needed');
+      const initConstraint = account.constraints?.find(constraint => constraint.kind === 'init' || constraint.kind === 'init_if_needed' || constraint.kind === 'init(idempotent)');
       if (initConstraint) {
         const enclosingInstruction = semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name;
         const associatedToken = account.constraints?.some(item => item.kind.startsWith('associated_token::'));
         const target = associatedToken ? 'associated-token' : 'system-program'; const targetKind = associatedToken ? 'associated-token' as const : 'system-program' as const;
-        const operation = associatedToken ? initConstraint.kind === 'init_if_needed' ? 'associated-token.create-idempotent' : 'associated-token.create' : 'system.create-account';
+        const idempotent = initConstraint.kind === 'init_if_needed' || initConstraint.kind === 'init(idempotent)';
+        const operation = associatedToken ? idempotent ? 'associated-token.create-idempotent' : 'associated-token.create' : 'system.create-account';
         const operationCategory = associatedToken ? 'token-account-create' as const : 'account-creation' as const;
         program.securitySurface.cpiSites.push({ id: `cpi:${framework.toLowerCase()}:init:${account.id}`, location: account.location, enclosingInstruction, invocationApi: `${framework} ${initConstraint.kind} account constraint`, instructionExpression: initConstraint.expression, accountArguments: [account.name ?? account.type, account.constraints?.find(item => item.kind === 'payer')?.expression ?? 'payer'], target, targetKind, operation, operationCategory, pdaSigned: !!seeds?.length, signerPdaIds: seeds?.length ? [`pda:${account.id}`] : [], evidence: [{ description: `${framework} ${initConstraint.kind} constraint generates an ${associatedToken ? 'Associated Token Program' : 'System Program'} CPI`, location: account.location }], confidence: 0.94 });
       }
@@ -302,25 +306,42 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
   const text = fn.text;
   const calls = descendants(fn, 'call_expression');
   const bindings = new Map(descendants(fn, 'let_declaration').map(node => [(node.childForFieldName('pattern')?.text ?? '').replace(/^mut\s+/, '').trim(), node.childForFieldName('value')?.text ?? node.text.split('=').slice(1).join('=').replace(/;\s*$/, '').trim()] as const).filter(([name]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)));
-  const addPda = (node: RustNode, api: string, evidence: string, confidence: number) => {
+  const addPda = (node: RustNode, api: string, evidence: string, confidence: number, seedIndex = 0, programIndex = 1, bumpIndex?: number) => {
     const args = callArguments(node);
-    const seedArgument = args[0]?.replace(/^&/, '').trim();
+    const seedArgument = args[seedIndex]?.replace(/^&/, '').trim();
     const parsedSeeds = seedArgument?.startsWith('[') && seedArgument.endsWith(']') ? splitRustExpressions(seedArgument.slice(1, -1)) : seedArgument ? [seedArgument] : undefined;
-    surface.pdaSites.push({ id: `${uri}:pda:${node.startPosition.row + 1}:${node.startPosition.column}`, location: loc(uri, node), enclosingFunction: metric.name, derivationApi: api, seeds: parsedSeeds, programIdExpression: args[1], evidence: [{ description: evidence, location: loc(uri, node) }], confidence });
+    surface.pdaSites.push({ id: `${uri}:pda:${node.startPosition.row + 1}:${node.startPosition.column}`, location: loc(uri, node), enclosingFunction: metric.name, derivationApi: api, seeds: parsedSeeds, bump: bumpIndex === undefined ? parsedSeeds?.find(seed => /bump/i.test(seed)) : args[bumpIndex], programIdExpression: args[programIndex], evidence: [{ description: evidence, location: loc(uri, node) }], confidence });
   };
   const addCpi = (node: RustNode, api: string, signed: boolean, target?: string) => {
     const args = callArguments(node);
     const receiver = /^([A-Za-z_][A-Za-z0-9_]*)\./.exec(api)?.[1];
-    const instructionExpression = resolveBinding(args[0] ?? (receiver ? resolveBinding(receiver, bindings) : ''), bindings);
+    const builderExpression = cpiBuilderExpression(api);
+    const builder = builderExpression ? resolveBinding(builderExpression, bindings) : undefined;
+    const builderArguments = builder ? finalCallArguments(builder) : [];
+    const instructionExpression = builder ?? resolveBinding(args[0] ?? (receiver ? resolveBinding(receiver, bindings) : ''), bindings);
     const inferred = inferCpiTarget(api, instructionExpression, fn.text, source);
     const resolvedTarget = target ?? inferred.target ?? targetForKind(inferred.kind);
     const resolvedKind = target ? targetKind(target) : inferred.kind;
     const operation = inferCpiOperation(`${api}\n${instructionExpression}`, resolvedKind);
     const cpiId = `${uri}:cpi:${node.startPosition.row + 1}:${node.startPosition.column}`;
     const pushedAccounts = receiver ? calls.filter(item => (item.childForFieldName('function')?.text ?? '') === `${receiver}.push_account`).flatMap(callArguments) : [];
-    surface.cpiSites.push({ id: cpiId, location: loc(uri, node), functionName: metric.name, invocationApi: api, instructionExpression, accountArguments: pushedAccounts.length ? pushedAccounts : args.slice(1), programAccountExpression: inferred.programAccountExpression, signerPdaIds: [], target: resolvedTarget, targetKind: resolvedKind, operation: operation?.operation, operationCategory: operation?.category, evidence: [{ description: `AST CPI call to ${api}${operation ? ` (${operation.operation})` : ''}`, location: loc(uri, node) }], pdaSigned: signed, confidence: resolvedTarget ? 0.95 : inferred.programAccountExpression ? 0.85 : 0.8 });
+    surface.cpiSites.push({ id: cpiId, location: loc(uri, node), functionName: metric.name, invocationApi: api, instructionExpression, accountArguments: pushedAccounts.length ? pushedAccounts : builderArguments.length ? builderArguments : args.slice(1), programAccountExpression: inferred.programAccountExpression, signerPdaIds: [], target: resolvedTarget, targetKind: resolvedKind, operation: operation?.operation, operationCategory: operation?.category, evidence: [{ description: `AST CPI call to ${api}${operation ? ` (${operation.operation})` : ''}`, location: loc(uri, node) }, ...(builder ? [{ description: `method-style CPI builder ${builder}`, location: loc(uri, node) }] : [])], pdaSigned: signed, confidence: resolvedTarget ? 0.95 : inferred.programAccountExpression ? 0.85 : 0.8 });
     if (signed) {
       const seeds = signerSeeds(api, args, bindings);
+      const seedHelpers = signerSeedHelpers(api, args, bindings);
+      const helperPdas = seedHelpers.flatMap(helper => surface.pdaSites.filter(site => {
+        const related = program.accounts.find(account => account.id === site.relatedAccountId);
+        return related?.name === helper || site.derivationApi === `${helper}::seeds`;
+      }));
+      if (helperPdas.length) {
+        const cpi = surface.cpiSites.at(-1)!;
+        cpi.signerPdaIds = [...new Set(helperPdas.flatMap(pda => pda.id ? [pda.id] : []))];
+        for (const pda of helperPdas) {
+          pda.usedAsSigner = true;
+          pda.relatedCpiIds = [...new Set([...(pda.relatedCpiIds ?? []), cpiId])];
+          pda.evidence.push({ description: `Quasar generated ${seedHelpers.find(helper => program.accounts.find(account => account.id === pda.relatedAccountId)?.name === helper) ?? 'PDA'}_seeds helper passed to ${api}`, location: loc(uri, node) });
+        }
+      }
       if (seeds.length) {
         const existing = surface.pdaSites.find(item => item.enclosingFunction === metric.name);
         const pdaId = existing?.id ?? `${uri}:pda:signer:${node.startPosition.row + 1}:${node.startPosition.column}`;
@@ -331,16 +352,21 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
       }
     }
   };
+  const steelSource = program.frameworkEvidence.some(item => item.framework === 'steel');
   for (const call of calls) {
     const api = call.childForFieldName('function')?.text ?? '';
     const baseApi = api.replace(/::<[^>]*>$/, '');
     const importedCpi = importedCpiApi(baseApi, source);
     if (/find_program_address|create_program_address(?:_const)?/.test(baseApi)) addPda(call, api, 'PDA derivation call', 0.95);
-    if (/invoke_signed|new_with_signer/.test(baseApi)) addCpi(call, api, true);
+    else if (steelSource && /\.has_seeds$/.test(baseApi)) addPda(call, api, 'Steel has_seeds PDA validation', 0.95);
+    else if (steelSource && /(?:^|::)(?:create_program_account|allocate_account)$/.test(baseApi)) addPda(call, api, 'Steel program-account helper PDA seeds', 0.94, /create_program_account$/.test(baseApi) ? 4 : 5, /create_program_account$/.test(baseApi) ? 3 : 4);
+    else if (steelSource && /(?:^|::)(?:create_program_account_with_bump|allocate_account_with_bump)$/.test(baseApi)) addPda(call, api, 'Steel program-account helper PDA seeds and explicit bump', 0.95, /create_program_account_with_bump$/.test(baseApi) ? 4 : 5, /create_program_account_with_bump$/.test(baseApi) ? 3 : 4, /create_program_account_with_bump$/.test(baseApi) ? 5 : 6);
+    if (/invoke_signed|invoke_with_signers|new_with_signer/.test(baseApi)) addCpi(call, api, true);
     else if (/^(?:.*::)?invoke$|cpi::invoke$|\.invoke$/.test(baseApi)) addCpi(call, api, false);
     else if (/(?:^|::)cpi::[A-Za-z_][A-Za-z0-9_]*$/.test(baseApi)) addCpi(call, api, /new_with_signer/.test(call.text));
     else if (importedCpi) addCpi(call, importedCpi, /new_with_signer/.test(call.text));
     else if (isKnownCpiWrapper(api)) addCpi(call, api, false, targetForKind(inferTargetKind(api)));
+    else if (steelSource && isSteelCpiHelper(baseApi)) addCpi(call, api, /(?:create_program_account|allocate_account|invoke_signed)/.test(baseApi), 'system-program');
   }
   const occurrence = (pattern: RegExp) => (text.match(pattern) ?? []).length;
   surface.signerSignals += occurrence(/is_signer/g);
@@ -376,12 +402,44 @@ function signerSeeds(api: string, args: string[], bindings: Map<string, string>)
   return splitRustExpressions(expression.slice(1, -1)).map(seed => /^Seed::from\s*\(([\s\S]*)\)$/.exec(seed.trim())?.[1]?.trim() ?? seed.replace(/^&/, '').trim()).filter(Boolean);
 }
 
+function signerSeedHelpers(api: string, args: string[], bindings: Map<string, string>): string[] {
+  let expression = /invoke_signed|invoke_with_signers/.test(api) && /\.invoke_(?:signed|with_signers)$/.test(api) ? args[0] ?? '' : args[2] ?? '';
+  expression = resolveBinding(expression, bindings).replace(/^&\s*/, '').trim();
+  const candidates = expression.startsWith('[') && expression.endsWith(']') ? splitRustExpressions(expression.slice(1, -1)) : [expression];
+  const helpers: string[] = [];
+  for (const candidate of candidates) {
+    const resolved = resolveBinding(candidate.replace(/^&\s*/, '').trim(), bindings);
+    const helper = /(?:^|\.)\s*([A-Za-z_][A-Za-z0-9_]*)_seeds\s*\(\s*\)/.exec(resolved)?.[1];
+    if (helper) helpers.push(helper);
+  }
+  return [...new Set(helpers)];
+}
+
+function cpiBuilderExpression(api: string): string | undefined {
+  const match = /^([\s\S]+)\.invoke(?:_signed|_with_signers)?$/.exec(api.trim());
+  return match?.[1]?.trim();
+}
+
+function finalCallArguments(expression: string): string[] {
+  const close = expression.lastIndexOf(')'); if (close < 0) return [];
+  let depth = 1, quote = '', escaped = false;
+  for (let index = close - 1; index >= 0; index--) {
+    const char = expression[index];
+    if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === quote) quote = ''; continue; }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === ')') depth++;
+    else if (char === '(' && --depth === 0) return splitRustExpressions(expression.slice(index + 1, close)).map(item => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 function inferCpiTarget(api: string, instructionExpression: string, functionText: string, sourceText: string): { kind: import('../model/report').ExternalProgramKind; target?: string; programAccountExpression?: string } {
   const combined = `${api}\n${instructionExpression}`;
   const importedSystemOperation = /\b(CreateAccount(?:WithSeed|AllowPrefund)?|Allocate(?:WithSeed)?|Assign(?:WithSeed)?|Transfer(?:WithSeed|Many)?)\b/.exec(combined)?.[1];
   if (/solana_system_interface::instruction|system_instruction|pinocchio[_-]system|SystemInstruction::/.test(combined) || importedSystemOperation && new RegExp(`\\buse\\s+pinocchio[_-]system(?:::[A-Za-z_][A-Za-z0-9_]*)*::(?:\\{[^}]*\\b${importedSystemOperation}\\b[^}]*\\}|${importedSystemOperation})`).test(sourceText)) return { kind: 'system-program', target: 'system-program' };
   const known = inferTargetKind(combined); if (known !== 'unknown' && known !== 'dynamic') return { kind: known, target: targetForKind(known) };
-  const programExpression = /CpiContext::new(?:_with_signer)?\s*\(\s*([^,]+)/.exec(instructionExpression)?.[1]?.trim() ?? /CpiDynamic(?:::[^:]*)?::new\s*\(([\s\S]*)\)$/.exec(instructionExpression)?.[1]?.trim() ?? /Instruction::new(?:_with_borsh)?\s*\(\s*([^,]+)/.exec(instructionExpression)?.[1]?.trim() ?? /program_id\s*:\s*([^,}\n]+)/.exec(instructionExpression)?.[1]?.trim() ?? /(?:let\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\.cpi\s*\(/.exec(functionText)?.[1];
+  const methodProgram = /^((?:self|ctx\.accounts)\.[A-Za-z_][A-Za-z0-9_]*)\s*\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.exec(instructionExpression)?.[1];
+  const programExpression = /CpiContext::new(?:_with_signer)?\s*\(\s*([^,]+)/.exec(instructionExpression)?.[1]?.trim() ?? /CpiDynamic(?:::[^:]*)?::new\s*\(([\s\S]*)\)$/.exec(instructionExpression)?.[1]?.trim() ?? /Instruction::new(?:_with_borsh)?\s*\(\s*([^,]+)/.exec(instructionExpression)?.[1]?.trim() ?? /program_id\s*:\s*([^,}\n]+)/.exec(instructionExpression)?.[1]?.trim() ?? methodProgram ?? /(?:let\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\.cpi\s*\(/.exec(functionText)?.[1];
   return programExpression ? { kind: 'custom', target: programExpression, programAccountExpression: programExpression } : { kind: 'dynamic' };
 }
 
@@ -401,9 +459,10 @@ function targetKind(target: string): import('../model/report').ExternalProgramKi
   return 'custom';
 }
 
-function inferTargetKind(api: string): import('../model/report').ExternalProgramKind { if (/pinocchio[_-]system|system_instruction|system_program|SystemProgram/i.test(api)) return 'system-program'; if (/token[_-]2022/i.test(api)) return 'token-2022'; if (/associated[_-]token|AssociatedToken/i.test(api)) return 'associated-token'; if (/memo/i.test(api)) return 'memo'; if (/stake/i.test(api)) return 'stake'; if (/vote/i.test(api)) return 'vote'; if (/lookup.*table|address_lookup/i.test(api)) return 'address-lookup-table'; if (/compute.*budget/i.test(api)) return 'compute-budget'; if (/ed25519/i.test(api)) return 'ed25519'; if (/secp256k1/i.test(api)) return 'secp256k1'; if (/secp256r1/i.test(api)) return 'secp256r1'; if (/anchor_spl.*token|pinocchio[_-]token|spl_token|token::/i.test(api)) return 'spl-token'; return /invoke|CpiContext|\.invoke/.test(api) ? 'dynamic' : 'unknown'; }
+function inferTargetKind(api: string): import('../model/report').ExternalProgramKind { if (/pinocchio[_-]system|system_instruction|system_program|SystemProgram/i.test(api)) return 'system-program'; if (/token[_-]2022/i.test(api)) return 'token-2022'; if (/associated[_-]token|AssociatedToken/i.test(api)) return 'associated-token'; if (/memo/i.test(api)) return 'memo'; if (/stake/i.test(api)) return 'stake'; if (/vote/i.test(api)) return 'vote'; if (/lookup.*table|address_lookup/i.test(api)) return 'address-lookup-table'; if (/compute.*budget/i.test(api)) return 'compute-budget'; if (/ed25519/i.test(api)) return 'ed25519'; if (/secp256k1/i.test(api)) return 'secp256k1'; if (/secp256r1/i.test(api)) return 'secp256r1'; if (/anchor_spl.*token|pinocchio[_-]token|spl_token|token::|token_program|TokenProgram/i.test(api)) return 'spl-token'; return /invoke|CpiContext|\.invoke/.test(api) ? 'dynamic' : 'unknown'; }
 function targetForKind(kind: import('../model/report').ExternalProgramKind): string | undefined { return kind === 'dynamic' || kind === 'unknown' ? undefined : kind; }
 function isKnownCpiWrapper(api: string): boolean { return /(?:anchor_spl|pinocchio[_-](?:system|token|associated|memo)|quasar_spl|quasar::cpi|steel::cpi)/i.test(api) && /(?:transfer|mint|burn|close|create|initialize|invoke|assign|allocate|approve|revoke|freeze|thaw|authority|recover)/i.test(api); }
+function isSteelCpiHelper(api: string): boolean { return /(?:^|::)(?:create_account|create_program_account(?:_with_bump)?|allocate_account(?:_with_bump)?)$/.test(api) || /\.collect$/.test(api); }
 function importedCpiApi(api: string, source: string): string | undefined {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(api)) return undefined;
   const escaped = escapeRegex(api);
@@ -420,6 +479,9 @@ function inferCpiOperation(value: string, kind: import('../model/report').Extern
   const normalized = value.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
   const match = (name: string) => new RegExp(`(?:^|[^a-z0-9])${name}(?:[^a-z0-9]|$)`).test(normalized);
   if (kind === 'system-program') {
+    if (match('collect')) return { operation: 'system.transfer', category: 'lamport-transfer' };
+    if (match('create_program_account_with_bump') || match('create_program_account')) return { operation: 'system.create-account', category: 'account-creation' };
+    if (match('allocate_account_with_bump') || match('allocate_account')) return { operation: 'system.allocate', category: 'allocation' };
     if (match('create_account_allow_prefund')) return { operation: 'system.create-account-allow-prefund', category: 'account-creation' };
     if (match('create_account_with_seed')) return { operation: 'system.create-account-with-seed', category: 'account-creation' };
     if (match('create_account')) return { operation: 'system.create-account', category: 'account-creation' };
@@ -598,10 +660,11 @@ function coverageFor(programs: ProgramUnit[], files: FileMetric[]) {
   const external = calls.filter(call => call.status === 'external');
   const relationships = programs.flatMap(program => program.relationships ?? []);
   const accounts = programs.flatMap(program => program.accounts);
+  const stateAccesses = programs.flatMap(program => program.instructions.flatMap(instruction => instruction.reachableSurface?.stateAccesses ?? []));
   const unresolvedReasons: Record<string, number> = {};
   for (const call of calls.filter(item => item.status === 'ambiguous' || item.status === 'dynamic' || item.status === 'unresolved')) unresolvedReasons[`${call.status === 'unresolved' ? 'unknown' : call.status} calls`] = (unresolvedReasons[`${call.status === 'unresolved' ? 'unknown' : call.status} calls`] ?? 0) + 1;
   const meaningfulInternal = ratio(internalResolvable.filter(call => call.status === 'resolved').length, internalResolvable.length);
-  return { parsedFiles: ratio(files.filter(file => !file.parseError).length, files.length), cargoPackages: ratio(programs.filter(program => !!program.packageId).length, programs.length), programsClassified: ratio(programs.filter(program => program.packageKind && program.packageKind !== 'unknown').length, programs.length), instructions: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.confidence >= 0.7).length, 0), totalInstructions), handlers: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => !!item.handler || !!item.functionName).length, 0), totalInstructions), instructionContexts: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(instruction => !!instruction.contextType).length, 0), totalInstructions), accountRelationships: ratio(relationships.filter(item => accounts.some(account => account.id === item.accountId)).length, relationships.length), calls: meaningfulInternal, internalCalls: meaningfulInternal, externalCalls: ratio(external.length, external.length), ambiguousCalls: calls.filter(call => call.status === 'ambiguous').length, dynamicCalls: calls.filter(call => call.status === 'dynamic').length, unknownCalls: calls.filter(call => call.status === 'unresolved').length, reachableSurfaces: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.reachableSurface?.complete).length, 0), totalInstructions), cpiTargets: ratio(programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.filter(site => !!site.target).length, 0), totalCpis), pdaSeeds: ratio(programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.filter(site => !!site.seeds?.length).length, 0), totalPdas), programIds: ratio(programs.filter(program => !!program.identity?.programId).length, programs.length), unresolvedReasons };
+  return { parsedFiles: ratio(files.filter(file => !file.parseError).length, files.length), cargoPackages: ratio(programs.filter(program => !!program.packageId).length, programs.length), programsClassified: ratio(programs.filter(program => program.packageKind && program.packageKind !== 'unknown').length, programs.length), instructions: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.confidence >= 0.7).length, 0), totalInstructions), handlers: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => !!item.handler || !!item.functionName).length, 0), totalInstructions), instructionContexts: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(instruction => !!instruction.contextType).length, 0), totalInstructions), accountRelationships: ratio(relationships.filter(item => accounts.some(account => account.id === item.accountId)).length, relationships.length), calls: meaningfulInternal, internalCalls: meaningfulInternal, externalCalls: ratio(external.length, external.length), ambiguousCalls: calls.filter(call => call.status === 'ambiguous').length, dynamicCalls: calls.filter(call => call.status === 'dynamic').length, unknownCalls: calls.filter(call => call.status === 'unresolved').length, reachableSurfaces: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.reachableSurface?.complete).length, 0), totalInstructions), stateAccessBindings: ratio(stateAccesses.filter(item => item.resolved).length, stateAccesses.length), cpiTargets: ratio(programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.filter(site => !!site.target).length, 0), totalCpis), pdaSeeds: ratio(programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.filter(site => !!site.seeds?.length).length, 0), totalPdas), programIds: ratio(programs.filter(program => !!program.identity?.programId).length, programs.length), unresolvedReasons };
 }
 
 function dedupeEvidence(items: import('../model/report').FrameworkEvidence[]): import('../model/report').FrameworkEvidence[] {
@@ -709,6 +772,7 @@ function resolveInstructionAccounts(program: ProgramUnit): void {
     const related = instruction.contextType ? program.accounts.filter(item => item.contextType === instruction.contextType) : handler ? program.accounts.filter(item => item.id?.includes(`:${handler}:`)) : [];
     for (const account of related) {
       if (!account.id) account.id = `account:${program.name}:${account.location.uri}:${account.location.startLine}:${account.name ?? account.type}`;
+      program.relationships = program.relationships.filter(item => item.instructionId !== (instruction.id ?? instruction.name) || item.accountId !== account.id);
       program.relationships.push({ instructionId: instruction.id ?? instruction.name, accountId: account.id, relationship: account.signer ? 'signer' : account.writable ? 'writes' : account.unchecked || account.raw ? 'unchecked' : 'reads' });
     }
   }
@@ -749,8 +813,13 @@ function linkReachableSemantics(program: ProgramUnit): void {
     surface.closeSites = semanticAccountSites(accounts, ['close'], 'close');
     surface.serializationSites = accounts.filter(account => account.serialization?.length).flatMap(account => account.serialization!.map(format => `${account.id}:serialization:${format}`));
     surface.deserializationSites = accounts.filter(account => account.stateType || account.serialization?.length).map(account => `${account.id}:deserialization`);
-    surface.lamportMutationSites = accounts.filter(account => account.lamportAccess?.includes('write') || account.lifecycle?.includes('lamport-transfer')).map(account => `${account.id}:lamport-write`);
-    surface.dataMutationSites = [...accounts.filter(account => account.dataAccess?.includes('write') || account.lifecycle?.includes('write')).map(account => `${account.id}:data-write`), ...runtime.filter(item => item.kind === 'state-write').map(item => item.id)];
+    const stateAccesses = surface.stateAccesses ?? [];
+    surface.serializationSites = [...new Set([...surface.serializationSites, ...stateAccesses.filter(item => item.operation === 'serialize').map(item => item.id)])];
+    surface.deserializationSites = [...new Set([...surface.deserializationSites, ...stateAccesses.filter(item => item.operation === 'deserialize').map(item => item.id)])];
+    surface.lamportMutationSites = [...new Set([...accounts.filter(account => account.lamportAccess?.includes('write') || account.lifecycle?.includes('lamport-transfer')).map(account => `${account.id}:lamport-write`), ...stateAccesses.filter(item => item.operation === 'lamport-write' || item.operation === 'close').map(item => item.id)])];
+    surface.dataMutationSites = [...new Set([...accounts.filter(account => account.dataAccess?.includes('write') || account.lifecycle?.includes('write')).map(account => `${account.id}:data-write`), ...runtime.filter(item => item.kind === 'state-write').map(item => item.id), ...stateAccesses.filter(item => item.operation === 'data-write' || item.operation === 'serialize' || item.operation === 'realloc' || item.operation === 'close').map(item => item.id)])];
+    surface.reallocSites = [...new Set([...surface.reallocSites, ...stateAccesses.filter(item => item.operation === 'realloc').map(item => item.id)])];
+    surface.closeSites = [...new Set([...surface.closeSites, ...stateAccesses.filter(item => item.operation === 'close').map(item => item.id)])];
     for (const account of accounts.filter(item => item.stateType)) {
       const state = program.stateTypes?.find(item => item.name === account.stateType); if (!state || !account.id) continue;
       if (account.lifecycle?.some(item => item === 'init' || item === 'create')) state.initializationSites.push(`${account.id}:init`);

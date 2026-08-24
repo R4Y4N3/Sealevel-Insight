@@ -114,9 +114,23 @@ export interface InstructionInfo {
   handler?: string;
   discriminator?: string;
   arguments?: Array<{ name: string; type?: string }>;
+  returns?: string;
+  remainingAccounts?: RemainingAccountsContract;
   reachableSurface?: InstructionReachableSurface;
   cfgStatus?: 'active' | 'unknown';
   cfgPredicates?: string[];
+}
+
+export interface RemainingAccountsContract {
+  kind: 'append';
+  name: string;
+  min: number;
+  max: number | null;
+  item: { clientType: string; signer: boolean | 'input'; writable: boolean | 'input' };
+  policy: { position: 'afterDeclaredAccounts'; order: 'preserveInput' };
+  onChainType?: string;
+  onChainMax?: number;
+  evidence?: Evidence[];
 }
 
 export interface UnresolvedCallDetail { callId: string; expression: string; status: 'ambiguous' | 'unresolved' | 'dynamic'; reason: string; candidates: string[]; location: SourceLocation; }
@@ -155,11 +169,44 @@ export interface InstructionReachableSurface {
     deserializationSites?: string[];
     lamportMutationSites?: string[];
     dataMutationSites?: string[];
+    stateAccesses?: InstructionStateAccess[];
     reachableCyclomaticComplexity?: number;
     reviewComplexity?: ReviewComplexity;
     unresolvedCallDetails?: UnresolvedCallDetail[];
     crossPackageSurfaces?: CrossPackageReachableSurface[];
     witnesses?: ReachabilityWitness[];
+}
+
+export type StateAccessOperation = 'data-read' | 'data-write' | 'lamport-read' | 'lamport-write' | 'deserialize' | 'serialize' | 'realloc' | 'close' | 'owner-change';
+
+/** A source-level account/state access before it is bound to an instruction account. */
+export interface StateAccessSite {
+  id: string;
+  operation: StateAccessOperation;
+  functionName: string;
+  qualifiedFunction?: string;
+  accountExpression: string;
+  accountParameter?: string;
+  stateType?: string;
+  fieldPath?: string;
+  api?: string;
+  expression: string;
+  aliasPath: string[];
+  location: SourceLocation;
+  confidence: number;
+  evidence: Evidence[];
+}
+
+/** A source access resolved through aliases and calls to one instruction account. */
+export interface InstructionStateAccess extends StateAccessSite {
+  sourceSiteId: string;
+  instructionId: string;
+  accountId?: string;
+  accountName?: string;
+  direct: boolean;
+  resolved: boolean;
+  functionPath: string[];
+  callPath: string[];
 }
 
 export interface AccountInfo {
@@ -371,6 +418,7 @@ export interface InstructionAccountDossier {
   dataAccess: AccountInfo['dataAccess'];
   lamportAccess: AccountInfo['lamportAccess'];
   serialization: string[];
+  stateAccesses: InstructionStateAccess[];
   constraints: string[];
   relations: AccountRelation[];
   location: SourceLocation;
@@ -416,11 +464,14 @@ export interface InstructionDossier {
   contextType?: string;
   discriminator?: string;
   arguments: Array<{ name: string; type?: string }>;
+  returns?: string;
+  remainingAccounts?: RemainingAccountsContract;
   location: SourceLocation;
   reachability: { complete: boolean; incompleteReasons: string[]; functions: string[]; unresolvedCalls: string[]; ambiguousCalls: string[]; unresolvedCallDetails: UnresolvedCallDetail[] };
   accounts: InstructionAccountDossier[];
   cpis: InstructionCpiDossier[];
   pdas: InstructionPdaDossier[];
+  stateAccesses: InstructionStateAccess[];
   stateTypeIds: string[];
   externalProgramIds: string[];
   sysvarIds: string[];
@@ -455,6 +506,10 @@ export interface StateFlow {
   dataAccess: Array<'read' | 'write'>;
   lamportAccess: Array<'read' | 'write'>;
   serialization: string[];
+  fieldReads: string[];
+  fieldWrites: string[];
+  accessSiteIds: string[];
+  accessComplete: boolean;
   location: SourceLocation;
   evidence: Evidence[];
 }
@@ -508,6 +563,7 @@ export interface SemanticCoverage {
   dynamicCalls?: number;
   unknownCalls?: number;
   reachableSurfaces?: CoverageRatio;
+  stateAccessBindings?: CoverageRatio;
   programIds?: CoverageRatio;
   idlInstructions?: CoverageRatio;
   idlAccounts?: CoverageRatio;
@@ -567,6 +623,7 @@ export interface ProgramUnit {
   reviewComplexity?: ReviewComplexity;
   instructionDossiers?: InstructionDossier[];
   stateFlows?: StateFlow[];
+  stateAccessSites?: StateAccessSite[];
   conditionalCompilation?: { featureKnowledge: 'cargo-metadata' | 'unknown'; enabledFeatures: string[]; inactiveItems: number; unknownItems: number; unknownPredicates: string[]; evidence: Evidence[] };
 }
 
@@ -626,6 +683,7 @@ export interface IdlInstruction {
   accounts: IdlInstructionAccount[];
   returns?: string;
   docs?: string[];
+  remainingAccounts?: RemainingAccountsContract;
 }
 export interface IdlProgram {
   name?: string;

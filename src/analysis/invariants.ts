@@ -26,6 +26,7 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     unique(program.securitySurface.pdaSites.map(item => item.id).filter((id): id is string => !!id), `${program.name}:pda`, add);
     unique((program.instructionDossiers ?? []).map(item => item.id), `${program.name}:dossier`, add);
     unique((program.stateFlows ?? []).map(item => item.id), `${program.name}:state-flow`, add);
+    unique((program.stateAccessSites ?? []).map(item => item.id), `${program.name}:state-access`, add);
     const accountIds = new Set(program.accounts.map(item => item.id));
     const instructionIds = new Set(program.instructions.flatMap(item => [item.id, item.name]).filter((id): id is string => !!id));
     const cpiIds = new Set(program.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id));
@@ -43,6 +44,13 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
       }
       for (const cpi of dossier.cpis) if (!cpiIds.has(cpi.cpiId)) add(`Instruction dossier ${dossier.id} references missing CPI ${cpi.cpiId}`, `dossier-cpi:${program.name}:${dossier.id}:${cpi.cpiId}`);
       for (const pda of dossier.pdas) if (!pdaIds.has(pda.pdaId)) add(`Instruction dossier ${dossier.id} references missing PDA ${pda.pdaId}`, `dossier-pda:${program.name}:${dossier.id}:${pda.pdaId}`);
+      unique(dossier.stateAccesses.map(item => item.id), `${program.name}:dossier-state-access:${dossier.id}`, add);
+      for (const access of dossier.stateAccesses) {
+        if (access.instructionId !== dossier.instructionId) add(`State access ${access.id} is attached to the wrong instruction`, `dossier-state-access-instruction:${program.name}:${access.id}`, access.location);
+        if (access.resolved && (!access.accountId || !accountIds.has(access.accountId))) add(`Resolved state access ${access.id} references a missing account`, `dossier-state-access-account:${program.name}:${access.id}`, access.location);
+        if (!access.functionPath.length) add(`State access ${access.id} has an empty function path`, `dossier-state-access-path:${program.name}:${access.id}`, access.location);
+        for (const id of access.callPath) if (!callIds.has(id)) add(`State access ${access.id} references missing call ${id}`, `dossier-state-access-call:${program.name}:${access.id}:${id}`, access.location);
+      }
       for (const detail of dossier.reachability.unresolvedCallDetails) {
         if (!callIds.has(detail.callId)) add(`Instruction dossier ${dossier.id} references missing call ${detail.callId}`, `dossier-call:${program.name}:${dossier.id}:${detail.callId}`);
         if (![...dossier.reachability.unresolvedCalls, ...dossier.reachability.ambiguousCalls].includes(detail.callId)) add(`Instruction dossier ${dossier.id} has an unclassified unresolved-call detail ${detail.callId}`, `dossier-call-classification:${program.name}:${dossier.id}:${detail.callId}`);
@@ -71,6 +79,9 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
       if (!instructionIds.has(flow.instructionId)) add(`State flow ${flow.id} references missing instruction ${flow.instructionId}`, `state-flow-instruction:${program.name}:${flow.id}`);
       if (!accountIds.has(flow.accountId)) add(`State flow ${flow.id} references missing account ${flow.accountId}`, `state-flow-account:${program.name}:${flow.id}`);
       if (flow.stateTypeId && !stateTypeIds.has(flow.stateTypeId)) add(`State flow ${flow.id} references missing state type ${flow.stateTypeId}`, `state-flow-state:${program.name}:${flow.id}`);
+      const dossier = program.instructionDossiers?.find(item => item.instructionId === flow.instructionId);
+      const dossierAccessIds = new Set(dossier?.stateAccesses.map(item => item.id) ?? []);
+      for (const id of flow.accessSiteIds) if (!dossierAccessIds.has(id)) add(`State flow ${flow.id} references missing state access ${id}`, `state-flow-access:${program.name}:${flow.id}:${id}`);
     }
     const nodeIds = new Set(program.architecture?.nodes.map(node => node.id) ?? []);
     for (const edge of program.architecture?.edges ?? []) {
@@ -108,4 +119,4 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
 function unique(ids: string[], prefix: string, add: (message: string, key: string) => void): void { const seen = new Set<string>(); for (const id of ids) { if (seen.has(id)) add(`Duplicate semantic ID ${id}`, `${prefix}:${id}`); seen.add(id); } }
 function validateReferences(ids: string[], valid: Set<string>, kind: string, target: string, dossierId: string, add: (message: string, key: string) => void): void { for (const id of ids) if (!valid.has(id)) add(`Instruction dossier ${dossierId} references missing cross-package ${kind} ${id} in ${target}`, `dossier-cross-${kind}:${dossierId}:${id}`); }
 function validLocation(location: SourceLocation): boolean { return !!location.uri && Number.isInteger(location.startLine) && location.startLine >= 1 && Number.isInteger(location.endLine) && location.endLine >= location.startLine && Number.isInteger(location.startColumn) && location.startColumn >= 0 && Number.isInteger(location.endColumn) && location.endColumn >= 0 && (location.endLine > location.startLine || location.endColumn >= location.startColumn); }
-function locations(program: WorkspaceReport['programs'][number]): SourceLocation[] { return [...program.functions.map(item => item.location), ...program.instructions.map(item => item.location), ...program.accounts.map(item => item.location), ...program.securitySurface.cpiSites.map(item => item.location), ...program.securitySurface.pdaSites.map(item => item.location), ...(program.stateTypes ?? []).map(item => item.location), ...(program.sysvars ?? []).map(item => item.location), ...(program.runtimeOperations ?? []).map(item => item.location), ...(program.events ?? []).map(item => item.location), ...(program.errors ?? []).map(item => item.location), ...(program.instructionDossiers ?? []).map(item => item.location), ...(program.stateFlows ?? []).map(item => item.location)]; }
+function locations(program: WorkspaceReport['programs'][number]): SourceLocation[] { return [...program.functions.map(item => item.location), ...program.instructions.map(item => item.location), ...program.accounts.map(item => item.location), ...program.securitySurface.cpiSites.map(item => item.location), ...program.securitySurface.pdaSites.map(item => item.location), ...(program.stateTypes ?? []).map(item => item.location), ...(program.stateAccessSites ?? []).map(item => item.location), ...(program.sysvars ?? []).map(item => item.location), ...(program.runtimeOperations ?? []).map(item => item.location), ...(program.events ?? []).map(item => item.location), ...(program.errors ?? []).map(item => item.location), ...(program.instructionDossiers ?? []).map(item => item.location), ...(program.stateFlows ?? []).map(item => item.location)]; }

@@ -42,7 +42,7 @@ export function instructionComplexity(program: ProgramUnit, instruction: Instruc
     ['accounts', 'accounts', accounts.length], ['writableAccounts', 'writable accounts', accounts.filter(account => account.writable).length],
     ['signerAccounts', 'signer accounts', accounts.filter(account => account.signer).length], ['rawUncheckedAccounts', 'raw/unchecked accounts', accounts.filter(account => account.raw || account.unchecked).length],
     ['cpis', 'CPIs', (surface?.cpis.length ?? 0) + cross.reduce((sum, item) => sum + item.cpiIds.length, 0)], ['signedCpis', 'signed CPIs', (surface?.signedCpis?.length ?? 0) + cross.reduce((sum, item) => sum + item.signedCpiIds.length, 0)], ['dynamicCpis', 'dynamic CPIs', (surface?.dynamicCpis?.length ?? 0) + cross.reduce((sum, item) => sum + item.dynamicCpiIds.length, 0)],
-    ['pdas', 'PDAs', (surface?.pdas.length ?? 0) + cross.reduce((sum, item) => sum + item.pdaIds.length, 0)], ['remainingAccounts', 'remaining_accounts use', 0],
+    ['pdas', 'PDAs', (surface?.pdas.length ?? 0) + cross.reduce((sum, item) => sum + item.pdaIds.length, 0)], ['remainingAccounts', 'remaining_accounts use', instruction.remainingAccounts ? 1 : 0],
     ['unsafe', 'unsafe surface', (surface?.unsafeFunctions?.length ?? 0) + (surface?.unsafeBlocks ?? 0)], ['manualSerialization', 'manual serialization', surface?.serializationSites?.length ?? 0],
     ['realloc', 'reallocation', surface?.reallocSites?.length ?? 0], ['unresolvedCalls', 'unresolved calls', surface?.unresolvedCalls?.length ?? 0], ['ambiguousCalls', 'ambiguous calls', surface?.ambiguousCalls?.length ?? 0]
   ];

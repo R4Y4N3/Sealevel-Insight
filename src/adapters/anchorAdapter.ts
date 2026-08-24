@@ -20,7 +20,7 @@ export function enrichAnchor(root: RustNode, uri: string): { instructions: Instr
       const context = generic?.split(',').map(part => part.trim().replace(/<.*$/, '')).reverse().find(part => /^[A-Z][A-Za-z0-9_]*$/.test(part));
       const argumentsNode = field(fn, 'parameters');
       const args = argumentsNode ? descendants(argumentsNode, 'parameter').filter(parameter => !/Context\s*</.test(parameter.text)).map(parameter => ({ name: parameter.childForFieldName('pattern')?.text ?? parameter.namedChildren[0]?.text ?? 'arg', type: parameter.childForFieldName('type')?.text })) : [];
-      instructions.push({ id: `instruction:${uri}:${name}:${location.startLine}`, name, handler: name, discriminator, location, confidence: 0.98, evidence: [{ description: '#[program] module function', location }, { description: customDiscriminator ? `Anchor custom instruction discriminator ${customDiscriminator}` : `Anchor default sha256(global:${name}) discriminator`, location }], functionName: name, contextType: context, arguments: args });
+      instructions.push({ id: `instruction:${uri}:${name}:${location.startLine}`, name, handler: name, discriminator, location, confidence: 0.98, evidence: [{ description: '#[program] module function', location }, { description: customDiscriminator ? `Anchor custom instruction discriminator ${customDiscriminator}` : `Anchor default sha256(global:${name}) discriminator`, location }], functionName: name, contextType: context, arguments: args, returns: instructionReturnType(fn) });
     }
   }
   for (const struct of descendants(root, 'struct_item')) {
@@ -111,6 +111,12 @@ function normalizeConstraint(key: string): string | undefined {
 function genericArguments(type: string): string[] { const match = /<([\s\S]*)>/.exec(type); return match ? splitRustExpressions(match[1]) : []; }
 function valueOf(items: AccountConstraint[], kind: string): string | undefined { return items.find(item => item.kind === kind)?.expression; }
 function has(items: AccountConstraint[], kind: string): boolean { return items.some(item => item.kind === kind); }
+function instructionReturnType(fn: RustNode): string | undefined {
+  const raw = (nodeText(field(fn, 'return_type')) || fn.children.find(child => child?.type === 'return_type')?.text || '').replace(/^\s*->\s*/, '').trim();
+  const result = /(?:^|::)Result\s*<([\s\S]*)>\s*$/.exec(raw);
+  const success = result ? splitRustExpressions(result[1])[0]?.trim() : undefined;
+  return success;
+}
 function attributesFor(node: RustNode): string { const values: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { values.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return values.join('\n'); }
 function attributeArgument(attributes: string, attribute: string, argument: string): string | undefined {
   const marker = `#[${attribute}`; let search = 0;

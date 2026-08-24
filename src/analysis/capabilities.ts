@@ -20,6 +20,12 @@ export function buildCapabilities(program: ProgramUnit, hasIdl = false): Capabil
   add('runtime', 'Uses direct runtime operations', (program.runtimeOperations ?? []).flatMap(item => item.evidence));
   add('borsh', 'Uses Borsh', (program.stateTypes ?? []).filter(item => item.serialization.includes('borsh')).flatMap(item => item.evidence));
   add('zero-copy', 'Uses zero-copy state', (program.stateTypes ?? []).filter(item => item.zeroCopy).flatMap(item => item.evidence));
+  const stateAccesses = program.stateAccessSites ?? [];
+  add('field-state-dataflow', 'Has field-level state dataflow', stateAccesses.filter(item => item.fieldPath).flatMap(item => item.evidence));
+  add('lamport-mutation', 'Mutates account lamports', stateAccesses.filter(item => item.operation === 'lamport-write').flatMap(item => item.evidence));
+  add('account-resize', 'Resizes account data', stateAccesses.filter(item => item.operation === 'realloc').flatMap(item => item.evidence));
+  add('account-close', 'Closes accounts', stateAccesses.filter(item => item.operation === 'close').flatMap(item => item.evidence));
+  add('owner-change', 'Changes account ownership', stateAccesses.filter(item => item.operation === 'owner-change').flatMap(item => item.evidence));
   add('events', 'Emits events', (program.events ?? []).filter(item => item.emissionSites.length).flatMap(item => item.evidence));
   add('idl', 'Has IDL', hasIdl ? [{ description: 'IDL discovered and matched to source program' }] : []);
   add('identity-conflict', 'Has program identity conflicts', program.identity?.conflicts ?? []);

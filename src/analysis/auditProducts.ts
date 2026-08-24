@@ -38,7 +38,7 @@ function buildInstructionDossiers(program: ProgramUnit): InstructionDossier[] {
         ownerValidation: { validated: !!account.ownerValidated, expected: account.ownerExpectation },
         addressValidation: { validated: !!account.addressValidated, expected: account.addressExpectation }, pdaId: account.pdaId,
         lifecycle: sorted(account.lifecycle ?? []), dataAccess: sorted(account.dataAccess ?? []), lamportAccess: sorted(account.lamportAccess ?? []),
-        serialization: sorted(account.serialization ?? []), constraints: sorted((account.constraints ?? []).map(item => item.kind)),
+        serialization: sorted(account.serialization ?? []), stateAccesses: [...(surface?.stateAccesses ?? [])].filter(item => item.accountId === account.id).sort((a, b) => a.id.localeCompare(b.id)), constraints: sorted((account.constraints ?? []).map(item => item.kind)),
         relations: [...(account.relations ?? [])].sort((a, b) => `${a.kind}:${a.target}`.localeCompare(`${b.kind}:${b.target}`)),
         location: account.location, evidence: dedupeEvidence(account.evidence)
       };
@@ -65,13 +65,13 @@ function buildInstructionDossiers(program: ProgramUnit): InstructionDossier[] {
     return {
       id: `dossier:${program.name}:${instructionId}`, program: program.name, instructionId, name: instruction.name,
       handler: instruction.handler ?? instruction.functionName, contextType: instruction.contextType, discriminator: instruction.discriminator,
-      arguments: [...(instruction.arguments ?? [])], location: instruction.location,
+      arguments: [...(instruction.arguments ?? [])], returns: instruction.returns, remainingAccounts: instruction.remainingAccounts, location: instruction.location,
       reachability: {
         complete: surface?.complete ?? false, incompleteReasons: sorted(surface?.incompleteReasons ?? []), functions: sorted(surface?.functions ?? []),
         unresolvedCalls: sorted(surface?.unresolvedCalls ?? []), ambiguousCalls: sorted(surface?.ambiguousCalls ?? []),
         unresolvedCallDetails: [...(surface?.unresolvedCallDetails ?? [])].sort((a, b) => a.callId.localeCompare(b.callId))
       },
-      accounts, cpis, pdas,
+      accounts, cpis, pdas, stateAccesses: [...(surface?.stateAccesses ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
       stateTypeIds: sorted(accounts.flatMap(item => item.stateTypeId ? [item.stateTypeId] : [])),
       externalProgramIds: sorted(surface?.externalPrograms ?? []), sysvarIds: sorted(surface?.sysvars ?? []),
       runtimeOperationIds: sorted(surface?.syscalls ?? []), eventIds: sorted(surface?.events ?? []), errorIds: sorted(surface?.errors ?? []),
@@ -100,8 +100,11 @@ function buildStateFlows(program: ProgramUnit): StateFlow[] {
       instructionId: dossier.instructionId, accountId: account.accountId, stateTypeId: account.stateTypeId, stateType: account.stateType,
       direct: account.direct, relationship: account.relationship, operations: sorted([...operations]),
       dataAccess: sorted(account.dataAccess ?? []), lamportAccess: sorted(account.lamportAccess ?? []),
-      serialization: sorted(account.serialization), location: account.location,
-      evidence: dedupeEvidence([...account.evidence, { description: `Account is ${account.relationship} by instruction ${dossier.name}`, location: account.location }])
+      serialization: sorted(account.serialization),
+      fieldReads: sorted(account.stateAccesses.filter(item => item.operation === 'data-read' && item.fieldPath).map(item => item.fieldPath!)),
+      fieldWrites: sorted(account.stateAccesses.filter(item => item.operation === 'data-write' && item.fieldPath).map(item => item.fieldPath!)),
+      accessSiteIds: sorted(account.stateAccesses.map(item => item.id)), accessComplete: account.stateAccesses.every(item => item.resolved), location: account.location,
+      evidence: dedupeEvidence([...account.evidence, ...account.stateAccesses.flatMap(item => item.evidence), { description: `Account is ${account.relationship} by instruction ${dossier.name}`, location: account.location }])
     } satisfies StateFlow;
   })).sort((a, b) => a.id.localeCompare(b.id));
 }

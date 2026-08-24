@@ -6,6 +6,9 @@
 - Added cross-package functions, CPIs, signed/dynamic CPIs, PDAs, state/runtime operations, external programs, and completeness evidence to instruction dossiers, reports, diffs, Explorer views, review scoring, schema validation, and invariants.
 - Added deterministic shortest reachability witnesses for functions and semantic sites, cross-package call-chain graph edges, and explicit partial/complete compilation profiles for target, test, debug-assertion, and compiler-emitted cfg evidence.
 - Added Dispatch & Indirect Calls v2: associated functions, `Self`/UFCS paths, generic-bound and trait-object contracts, simple alias/deref evidence, closure/function-item bindings, runtime function-pointer uncertainty, macro-origin records, and deterministic recursion components.
+- Added State & Account Dataflow v2 with field-level reads/writes, data and lamport access, lifecycle operations, alias/call evidence paths, and instruction-account bindings.
+- Added Quasar framework/ABI v2 coverage for return data, account relations, idempotent initialization, remaining-account contracts, method-style CPI builders, multi-signer invocation, and generated PDA seed helpers; remaining-account review scoring now applies its documented weight.
+- Added Steel semantics v2 for chained account validations, sysvars and PDA seeds, program-account helper CPIs and lifecycle, lamport transfer/close helpers, typed account evidence, and concrete `error!` enum variants.
 - Added complete TOML-backed Cargo workspace/package/target/dependency/feature modeling with recoverable diagnostics.
 - Added module-aware Rust symbols, conservative call resolution, cycle-safe instruction reachability, and explicit ambiguous/unresolved/dynamic coverage loss.
 - Added unified account, state, serialization, CPI, PDA, external-program, sysvar, runtime-operation, event, error, capability, and review-complexity models.

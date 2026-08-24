@@ -117,7 +117,18 @@ function extractEventsAndErrors(root: RustNode, uri: string, program: ProgramUni
       const name = /!\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(text)?.[1];
       if (!name) continue;
       if (prefix === 'event!') collection.push({ id: `event:${program.name}:${name}`, name, framework: 'steel', location, emissionSites: [], evidence: [{ description: 'Steel event! macro', location }] });
-      else collection.push({ id: `error:${program.name}:${name}`, name, framework: 'steel', location, useSites: [], evidence: [{ description: 'Steel error! macro', location }] });
+      else {
+        const enumeration = descendants(root, 'enum_item').find(item => nodeText(field(item, 'name')) === name);
+        if (!enumeration) collection.push({ id: `error:${program.name}:${name}`, name, framework: 'steel', location, useSites: [], evidence: [{ description: 'Steel error! macro with unresolved enum definition', location }] });
+        else {
+          let nextCode = 0;
+          for (const variant of descendants(enumeration, 'enum_variant')) {
+            const variantName = nodeText(field(variant, 'name')); const variantLocation = loc(uri, variant); const explicit = /=\s*(\d+)\b/.exec(variant.text)?.[1];
+            const code = explicit ? Number(explicit) : nextCode; nextCode = code + 1;
+            collection.push({ id: `error:${program.name}:${variantName}`, name: variantName, code, message: /#\[error\s*\(\s*"([^"]*)"/.exec(attributesFor(variant))?.[1], framework: 'steel', location: variantLocation, useSites: [], evidence: [{ description: `Steel error! enum ${name} variant`, location: variantLocation }] });
+          }
+        }
+      }
     }
   }
   program.events = [...new Map(program.events!.map(item => [item.id, item])).values()];
@@ -146,6 +157,6 @@ function serializationFor(value: string): string[] { return [...new Set([/Borsh|
 function frameworkFor(value: string): string | undefined { if (/ShankAccount|ShankType/.test(value)) return 'shank'; if (/#\[(?:account|zero_copy)/.test(value)) return 'anchor-or-quasar'; if (/account!/.test(value)) return 'steel'; return undefined; }
 function staticSize(types: string[]): number | undefined { let total = 0; for (const type of types) { const size = primitiveSize(type); if (size === undefined) return undefined; total += size; } return total; }
 function primitiveSize(type: string): number | undefined { const value = type.trim(); const primitive: Record<string, number> = { bool: 1, u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8, u128: 16, i128: 16, Pubkey: 32, Address: 32 }; if (primitive[value] !== undefined) return primitive[value]; const array = /^\[([^;]+);\s*(\d+)\]$/.exec(value); if (array) { const element = primitiveSize(array[1]); return element === undefined ? undefined : element * Number(array[2]); } return undefined; }
-function runtimeKind(api: string): string | undefined { const normalized = api.replace(/::<[^>]*>$/, ''); if (/invoke_signed|new_with_signer/.test(normalized)) return 'signed-cpi'; if (/(^|::)invoke$/.test(normalized) || /(?:^|::)cpi::[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return 'cpi'; if (/\.(?:realloc|resize)$|^(?:realloc|resize)$/.test(normalized)) return 'realloc'; if (/\.set_inner$/.test(normalized)) return 'state-write'; if (/try_borrow_mut|borrow_mut|set_lamports/.test(normalized)) return 'state-write'; if (/set_return_data|get_return_data/.test(normalized)) return 'return-data'; if (/remaining_compute_units|sol_remaining_compute_units/.test(normalized)) return 'compute-units'; if (/keccak|sha256|hashv?/.test(normalized)) return 'hashing'; if (/curve|is_on_curve|alt_bn128|secp256/.test(normalized)) return 'curve-check'; if (/memcpy|memcmp|memset|memmove/.test(normalized)) return 'memory'; return undefined; }
+function runtimeKind(api: string): string | undefined { const normalized = api.replace(/::<[^>]*>$/, ''); if (/invoke_signed|invoke_with_signers|new_with_signer/.test(normalized)) return 'signed-cpi'; if (/(^|::)invoke$/.test(normalized) || /(?:^|::)cpi::[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return 'cpi'; if (/\.(?:realloc|resize)$|^(?:realloc|resize)$/.test(normalized)) return 'realloc'; if (/\.set_inner$/.test(normalized)) return 'state-write'; if (/try_borrow_mut|borrow_mut|set_lamports/.test(normalized)) return 'state-write'; if (/set_return_data|get_return_data/.test(normalized)) return 'return-data'; if (/remaining_compute_units|sol_remaining_compute_units/.test(normalized)) return 'compute-units'; if (/keccak|sha256|hashv?/.test(normalized)) return 'hashing'; if (/curve|is_on_curve|alt_bn128|secp256/.test(normalized)) return 'curve-check'; if (/memcpy|memcmp|memset|memmove/.test(normalized)) return 'memory'; return undefined; }
 function enclosingFunctionName(node: RustNode): string | undefined { let parent = node.parent; while (parent) { if (parent.type === 'function_item') return nodeText(field(parent, 'name')); parent = parent.parent; } return undefined; }
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }

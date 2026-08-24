@@ -12,6 +12,7 @@ import { buildScope } from '../../src/core/scope';
 import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
 import { applyCargoMetadata } from '../../src/discovery/cargoMetadata';
+import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
 
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
 
@@ -379,7 +380,7 @@ describe('Sealevel Insight v0.6 release semantics', () => {
 
   it('extracts Quasar explicit discriminators, arguments, remaining contexts, and borrowed mutable wrappers', async () => {
     const report = await sampleReport(`use quasar_lang::prelude::*;
-#[program] mod p { #[instruction(discriminator = [0, 1])] pub fn write(ctx: CtxWithRemaining<Write>, amount: u64) -> Result<(), ProgramError> { Ok(()) } }
+#[program] mod p { #[instruction(discriminator = [0, 1])] pub fn write(ctx: CtxWithRemaining<Write>, amount: u64) -> Result<(), ProgramError> { let signers = ctx.remaining_accounts().parse::<Signer, 10>()?; Ok(()) } }
 #[derive(Accounts)] pub struct Write<'info> { pub payer: &'info mut Signer, pub vault: &'info mut Account<Vault>, pub system_program: &'info Program<System> }
 #[account(discriminator = 2)] pub struct Vault { pub amount: u64 }
 #[event(discriminator = 4)] pub struct Written { pub amount: u64 }`);
@@ -388,7 +389,59 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(program.accounts.find(item => item.name === 'payer')?.signer, true); assert.equal(program.accounts.find(item => item.name === 'payer')?.writable, true);
     assert.equal(program.accounts.find(item => item.name === 'vault')?.stateType, 'Vault'); assert.equal(program.accounts.find(item => item.name === 'vault')?.writable, true);
     assert.equal(program.accounts.find(item => item.name === 'system_program')?.executable, true); assert.ok(program.securitySurface.remainingAccounts > 0);
+    assert.deepEqual(instruction.remainingAccounts, { kind: 'append', name: 'remainingAccounts', min: 0, max: null, item: { clientType: 'accountMeta', signer: 'input', writable: 'input' }, policy: { position: 'afterDeclaredAccounts', order: 'preserveInput' }, onChainType: 'Signer', onChainMax: 10, evidence: instruction.remainingAccounts?.evidence });
+    assert.equal(program.instructionDossiers?.[0].remainingAccounts?.onChainMax, 10);
+    const idl = normalizeIdl({ spec: 'quasar-idl/1.0.0', instructions: [{ name: 'write', discriminator: [0, 1], accounts: [{ name: 'payer', signer: true, writable: true }, { name: 'vault', writable: true }, { name: 'systemProgram' }], args: [{ name: 'amount', type: 'u64' }], remainingAccounts: { kind: 'append', name: 'remainingAccounts', min: 0, max: null, item: { clientType: 'accountMeta', signer: 'input', writable: 'input' }, policy: { position: 'afterDeclaredAccounts', order: 'preserveInput' } } }] })!;
+    assert.equal(reconcileIdl(program, idl).reconciliations.some(item => item.item.includes('remainingAccounts') && item.status === 'MISMATCH'), false);
     assert.deepEqual(program.events?.map(item => [item.name, item.discriminator, item.framework]), [['Written', '[4]', 'quasar']]);
+  });
+
+  it('models Quasar ABI returns, account relations, idempotent init, and method-style signed CPIs', async () => {
+    const report = await sampleReport(`use quasar_lang::prelude::*;
+#[program] mod p {
+  #[instruction(discriminator = 7)]
+  pub fn execute(ctx: Ctx<Execute>) -> Result<PodU64, ProgramError> { ctx.accounts.run(&ctx.bumps)?; Ok(PodU64::from(1u64)) }
+}
+#[derive(Accounts)] pub struct Execute<'info> {
+  #[account(init_if_needed, payer = payer, seeds = [b"vault", payer], bump, has_one = authority, close(dest = authority))]
+  pub vault: &'info mut Account<Vault>,
+  #[account(mut)] pub payer: &'info mut Signer,
+  pub authority: &'info Signer,
+  pub source: &'info mut Account<Token>,
+  pub destination: &'info mut Account<Token>,
+  pub token_program: &'info Program<TokenProgram>,
+  pub custom_program: &'info Program<CustomProgram>,
+}
+impl<'info> Execute<'info> {
+  pub fn run(&mut self, bumps: &ExecuteBumps) -> Result<(), ProgramError> {
+    let seeds = bumps.vault_seeds();
+    self.token_program.transfer(self.source, self.destination, self.authority, 1).invoke_signed(&seeds)?;
+    let custom_call = self.custom_program.execute(self.vault, self.authority, 1);
+    custom_call.invoke_with_signers(&[seeds])?;
+    Ok(())
+  }
+}
+#[account(discriminator = 1)] pub struct Vault { pub authority: Address }
+pub struct Token; pub struct TokenProgram; pub struct CustomProgram;`);
+    const program = report.programs[0]; const instruction = program.instructions[0]; const vault = program.accounts.find(item => item.name === 'vault')!;
+    assert.equal(instruction.returns, 'PodU64'); assert.deepEqual(vault.lifecycle, ['init', 'create', 'write', 'close']);
+    assert.deepEqual(vault.relations?.map(item => [item.kind, item.target]), [['payer', 'payer'], ['has-one', 'authority'], ['close-destination', 'authority']]);
+    assert.ok(instruction.reachableSurface?.reviewComplexity?.components.every(item => item.label !== 'remaining_accounts use'));
+    const token = program.securitySurface.cpiSites.find(item => item.operation === 'token.transfer');
+    assert.equal(token?.targetKind, 'spl-token'); assert.equal(token?.pdaSigned, true); assert.deepEqual(token?.accountArguments, ['self.source', 'self.destination', 'self.authority', '1']);
+    assert.ok(token?.signerPdaIds?.includes(vault.pdaId!));
+    const custom = program.securitySurface.cpiSites.find(item => item.invocationApi?.includes('invoke_with_signers'));
+    assert.equal(custom?.target, 'self.custom_program'); assert.equal(custom?.pdaSigned, true); assert.ok(custom?.signerPdaIds?.includes(vault.pdaId!));
+    const matched = normalizeIdl({ instructions: [{ name: 'execute', discriminator: [7], accounts: [], args: [], returns: 'PodU64' }] })!;
+    assert.equal(reconcileIdl({ instructions: [instruction], identity: undefined }, matched).reconciliations.some(item => item.item.endsWith('.returns')), false);
+    const mismatch = normalizeIdl({ instructions: [{ name: 'execute', discriminator: [7], accounts: [], args: [], returns: 'u64' }] })!;
+    assert.equal(reconcileIdl({ instructions: [instruction], identity: undefined }, mismatch).reconciliations.some(item => item.item.endsWith('.returns') && item.status === 'MISMATCH'), true);
+  });
+
+  it('charges review complexity for a declared remaining-account contract', async () => {
+    const report = await sampleReport('use quasar_lang::prelude::*; #[program] mod p { #[instruction(discriminator = 1)] pub fn route(ctx: CtxWithRemaining<Route>) -> Result<(), ProgramError> { Ok(()) } } #[derive(Accounts)] pub struct Route {}');
+    const component = report.programs[0].instructions[0].reachableSurface?.reviewComplexity?.components.find(item => item.label === 'remaining_accounts use');
+    assert.deepEqual(component, { label: 'remaining_accounts use', value: 1, weight: 8, contribution: 8 });
   });
 
   it('propagates account lifecycle and mutation sites into instruction dossiers', async () => {
@@ -410,6 +463,80 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   it('models explicit resize and state-write operations', async () => {
     const report = await sampleReport('fn update(account: &AccountView) { account.resize(64); account.set_inner(State { value: 1 }); }');
     assert.deepEqual(report.programs[0].runtimeOperations?.map(item => item.kind), ['realloc', 'state-write']);
+  });
+
+  it('resolves field-level state access through aliases and helper arguments', async () => {
+    const report = await sampleReport(`use anchor_lang::prelude::*;
+#[program] pub mod p {
+  pub fn update(ctx: Context<Update>) -> Result<()> {
+    let vault_alias = &mut ctx.accounts.vault;
+    apply_update(vault_alias);
+    move_lamports(&ctx.accounts.vault.to_account_info());
+    Ok(())
+  }
+}
+fn apply_update(vault: &mut Vault) { vault.balance += 1; let _authority = vault.authority; }
+fn move_lamports(vault_info: &AccountInfo) { vault_info.add_lamports(1); }
+#[derive(Accounts)] pub struct Update<'info> { #[account(mut)] pub vault: Account<'info, Vault> }
+#[account] pub struct Vault { pub balance: u64, pub authority: Pubkey }`);
+    const program = report.programs[0]; const dossier = program.instructionDossiers?.[0]!;
+    const vault = dossier.accounts.find(item => item.name === 'vault')!;
+    assert.ok(vault.stateAccesses.some(item => item.functionName === 'apply_update' && item.operation === 'data-write' && item.fieldPath === 'balance' && item.resolved));
+    assert.ok(vault.stateAccesses.some(item => item.functionName === 'apply_update' && item.operation === 'data-read' && item.fieldPath === 'authority' && item.resolved));
+    assert.ok(vault.stateAccesses.some(item => item.functionName === 'move_lamports' && item.operation === 'lamport-write' && item.resolved));
+    const flow = program.stateFlows?.find(item => item.accountId === vault.accountId)!;
+    assert.deepEqual(flow.fieldReads, ['authority']); assert.deepEqual(flow.fieldWrites, ['balance']); assert.equal(flow.accessComplete, true);
+    assert.ok(dossier.stateAccesses.some(item => item.functionPath.length === 2 && item.callPath.length === 1));
+  });
+
+  it('does not propagate account provenance through unrelated computed values', async () => {
+    const report = await sampleReport(`use anchor_lang::prelude::*;
+#[program] pub mod p { pub fn inspect(ctx: Context<Inspect>) -> Result<()> { let digest = hash(ctx.accounts.vault.key().as_ref()); let mut copy = digest; copy.bytes[0] = 1; Ok(()) } }
+#[derive(Accounts)] pub struct Inspect<'info> { pub vault: Account<'info, Vault> }
+#[account] pub struct Vault { pub balance: u64 }
+fn hash(_: &[u8]) -> Digest { Digest { bytes: [0; 32] } } struct Digest { bytes: [u8; 32] }`);
+    const accesses = report.programs[0].instructions[0].reachableSurface?.stateAccesses ?? [];
+    assert.equal(accesses.some(item => item.fieldPath === 'bytes'), false);
+  });
+
+  it('tracks native borrow, deserialize, serialize, resize, close, and owner changes as distinct sites', async () => {
+    const report = await sampleReport(`use borsh::{BorshDeserialize, BorshSerialize};
+#[derive(BorshDeserialize, BorshSerialize)] pub struct State { pub value: u64 }
+pub fn process_instruction(accounts: &[AccountInfo]) -> ProgramResult {
+  let vault = &accounts[0];
+  let mut data = vault.try_borrow_mut_data()?;
+  let mut state = State::try_from_slice(&data)?;
+  state.value += 1;
+  state.serialize(&mut &mut data[..])?;
+  vault.realloc(64, true)?;
+  vault.assign(&crate::ID);
+  vault.close(destination)?;
+  Ok(())
+}`);
+    const program = report.programs[0]; const operations = new Set(program.stateAccessSites?.map(item => item.operation));
+    for (const operation of ['data-write', 'deserialize', 'serialize', 'realloc', 'owner-change', 'close']) assert.equal(operations.has(operation as never), true, `missing ${operation}`);
+    const flow = program.stateFlows?.[0]!;
+    assert.ok(flow.accessSiteIds.length >= 6); assert.deepEqual(flow.fieldWrites, ['value']);
+    assert.ok(program.instructions[0].reachableSurface?.reallocSites?.some(item => item.startsWith('instruction-access:')));
+    assert.ok(program.instructions[0].reachableSurface?.closeSites?.some(item => item.startsWith('instruction-access:')));
+  });
+
+  it('models current Pinocchio AccountView safe, unchecked, pointer, owner, resize, and close APIs', async () => {
+    const report = await sampleReport(`use pinocchio::{AccountView, Resize};
+pub fn process_instruction(accounts: &mut [AccountView]) -> ProgramResult {
+  let account = &mut accounts[0];
+  let _read = account.try_borrow()?;
+  let _raw = unsafe { account.borrow_unchecked_mut() };
+  let _ptr = account.data_mut_ptr();
+  unsafe { account.assign(&ID); }
+  account.resize_unchecked(64)?;
+  unsafe { account.close_unchecked(); }
+  Ok(())
+}`);
+    const account = report.programs[0].accounts.find(item => item.name === 'account')!;
+    assert.equal(account.writable, true); assert.deepEqual(account.dataAccess, ['read', 'write']);
+    const operations = new Set(report.programs[0].instructions[0].reachableSurface?.stateAccesses?.map(item => item.operation));
+    for (const operation of ['data-read', 'data-write', 'owner-change', 'realloc', 'close']) assert.equal(operations.has(operation as never), true, `missing ${operation}`);
   });
 
   it('extracts Shank tuple-variant arguments for source and IDL reconciliation', async () => {

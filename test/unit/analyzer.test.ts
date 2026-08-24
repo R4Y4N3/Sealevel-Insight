@@ -494,6 +494,33 @@ pub fn process_add(accounts: &[AccountInfo<'_>]) -> ProgramResult { let [counter
     assert.equal(tokenProgram.executable, true); assert.equal(tokenProgram.addressExpectation, '&spl_token::ID');
   });
 
+  it('models current Steel validation chains, helper CPIs, PDA seeds, lifecycle, and error variants', async () => {
+    const source = `use steel::*;
+#[repr(u8)] enum AccountKind { Vault = 3 }
+#[repr(C)] #[derive(Pod, Zeroable)] struct Vault { value: u64 }
+account!(AccountKind, Vault);
+#[repr(u32)] enum VaultError { #[error("Denied")] Denied = 9, #[error("Frozen")] Frozen }
+error!(VaultError);
+pub fn process_initialize(accounts: &[AccountInfo<'_>]) -> ProgramResult {
+  let [target, system_program, payer, clock] = accounts else { return Err(ProgramError::NotEnoughAccountKeys); };
+  target.is_empty()?.is_writable()?.has_owner(&ID)?.has_address(&VAULT)?.is_type::<Vault>(&ID)?.has_seeds(&[b"vault"], &ID)?;
+  system_program.is_program(&system_program::ID)?; payer.is_signer()?; clock.is_sysvar(&clock::ID)?;
+  create_program_account_with_bump::<Vault>(target, system_program, payer, &ID, &[b"vault"], bump)?;
+  target.send(1, payer); target.collect(1, payer)?; target.close(payer)?; Ok(())
+}`;
+    const report = await analyzeSources([{ uri: 'steel-v2.rs', source, packageName: 'steel-v2' }], wasm); const program = report.programs[0];
+    const target = program.accounts.find(item => item.name === 'target')!; const payer = program.accounts.find(item => item.name === 'payer')!; const clock = program.accounts.find(item => item.name === 'clock')!;
+    assert.equal(target.stateType, 'Vault'); assert.equal(target.ownerExpectation, '&ID'); assert.equal(target.addressExpectation, '&VAULT');
+    assert.deepEqual(target.constraints?.map(item => item.kind), ['uninitialized', 'owner', 'address', 'type', 'seeds']);
+    assert.ok(target.lifecycle?.includes('init')); assert.ok(target.lifecycle?.includes('create')); assert.ok(target.lifecycle?.includes('close')); assert.ok(target.lifecycle?.includes('lamport-transfer'));
+    assert.equal(payer.signer, true); assert.equal(payer.writable, true); assert.equal(clock.ownerExpectation, 'solana_program::sysvar::ID'); assert.equal(clock.addressExpectation, '&clock::ID');
+    assert.ok(program.securitySurface.pdaSites.some(item => item.derivationApi?.includes('has_seeds') && item.seeds?.includes('b"vault"')));
+    assert.ok(program.securitySurface.pdaSites.some(item => item.derivationApi?.includes('create_program_account_with_bump') && item.bump === 'bump'));
+    assert.ok(program.securitySurface.cpiSites.some(item => item.operation === 'system.create-account' && item.pdaSigned));
+    assert.ok(program.securitySurface.cpiSites.some(item => item.operation === 'system.transfer' && !item.pdaSigned));
+    assert.deepEqual(program.errors?.map(item => [item.name, item.code, item.message]), [['Denied', 9, 'Denied'], ['Frozen', 10, 'Frozen']]);
+  });
+
   it('imports saved Cargo metadata as an offline resolved graph', () => {
     const graph = buildCargoGraph([
       { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["program"]' },

@@ -21,7 +21,7 @@ function normalizeIdlProgram(programNode: Record<string, unknown>, raw: Record<s
   const instructions = records(programNode.instructions).map(item => ({
     name: nodeName(item), discriminator: normalizeDiscriminator(item.discriminator ?? object(item.discriminant).value) ?? codamaDiscriminator(item, 'arguments'),
     arguments: records(item.args ?? item.arguments).filter(arg => arg.defaultValueStrategy !== 'omitted').map(arg => ({ name: nodeName(arg), type: normalizeType(arg.type), docs: strings(arg.docs) })),
-    accounts: flattenAccounts(records(item.accounts)), returns: normalizeType(item.returns ?? item.returnType), docs: strings(item.docs)
+    accounts: flattenAccounts(records(item.accounts)), returns: normalizeType(item.returns ?? item.returnType), docs: strings(item.docs), remainingAccounts: normalizeRemainingAccounts(item.remainingAccounts ?? item.remaining_accounts)
   }));
   if (!instructions.length && !('instructions' in programNode)) return undefined;
   const rawAccounts = records(programNode.accounts);
@@ -54,6 +54,8 @@ export function reconcileIdl(program: Pick<ProgramUnit, 'instructions' | 'identi
     if (!idlInstruction) continue;
     compareDiscriminator(`instruction:${sourceInstruction.name}.discriminator`, sourceInstruction.discriminator, idlInstruction.discriminator, reconciliations);
     compareArguments(sourceInstruction.name, sourceInstruction.arguments ?? [], idlInstruction.arguments ?? [], reconciliations);
+    compareReturnType(sourceInstruction.name, sourceInstruction.returns, idlInstruction.returns, reconciliations);
+    compareRemainingAccounts(sourceInstruction.name, sourceInstruction.remainingAccounts, idlInstruction.remainingAccounts, reconciliations);
     const accountIds = program.relationships?.filter(item => item.instructionId === (sourceInstruction.id ?? sourceInstruction.name)).map(item => item.accountId) ?? [];
     const sourceAccounts = accountIds.map(id => (program.accounts ?? []).find(account => account.id === id)).filter((item): item is ProgramUnit['accounts'][number] => !!item);
     if (!sourceAccounts.length && sourceInstruction.contextType) reconciliations.push({ status: 'UNKNOWN', item: `accounts:${sourceInstruction.name}`, details: 'Source context exists but source account fields could not be resolved.' });
@@ -106,6 +108,19 @@ function compareArguments(instruction: string, source: Array<{ name: string; typ
     if (source[index].type && idl[index].type && normalizeType(source[index].type) !== normalizeType(idl[index].type)) output.push({ status: 'MISMATCH', item: `instruction:${instruction}.argument:${source[index].name}.type`, details: `source=${source[index].type}, IDL=${idl[index].type}` });
   }
 }
+function compareReturnType(instruction: string, source: string | undefined, idl: string | undefined, output: IdlReconciliation[]): void {
+  const sourceUnit = source === '()', idlUnit = !idl || idl === '()';
+  if (sourceUnit && idlUnit || !source && !idl) return;
+  if (!source && idl) { output.push({ status: 'UNKNOWN', item: `instruction:${instruction}.returns`, details: `IDL=${idl}; source adapter did not establish a return-data contract` }); return; }
+  if (source && idlUnit) { output.push({ status: 'MISMATCH', item: `instruction:${instruction}.returns`, details: `source=${source}, IDL has no return type` }); return; }
+  if (normalizeType(source) !== normalizeType(idl)) output.push({ status: 'MISMATCH', item: `instruction:${instruction}.returns`, details: `source=${source}, IDL=${idl}` });
+}
+function compareRemainingAccounts(instruction: string, source: IdlProgram['instructions'][number]['remainingAccounts'], idl: IdlProgram['instructions'][number]['remainingAccounts'], output: IdlReconciliation[]): void {
+  const prefix = `instruction:${instruction}.remainingAccounts`;
+  if (!!source !== !!idl) { output.push({ status: 'MISMATCH', item: prefix, details: source ? 'source accepts trailing accounts, IDL has no remainingAccounts contract' : 'IDL declares trailing accounts, source context does not accept them' }); return; }
+  if (!source || !idl) return;
+  for (const [field, actual, expected] of [['kind', source.kind, idl.kind], ['name', source.name, idl.name], ['min', source.min, idl.min], ['max', source.max, idl.max], ['item.clientType', source.item.clientType, idl.item.clientType], ['item.signer', source.item.signer, idl.item.signer], ['item.writable', source.item.writable, idl.item.writable], ['policy.position', source.policy.position, idl.policy.position], ['policy.order', source.policy.order, idl.policy.order]] as const) if (actual !== expected) output.push({ status: 'MISMATCH', item: `${prefix}.${field}`, details: `source=${String(actual)}, IDL=${String(expected)}` });
+}
 function compareAccounts(instruction: string, source: ProgramUnit['accounts'], idl: IdlProgram['instructions'][number]['accounts'], output: IdlReconciliation[]): void {
   if (source.length !== idl.length) output.push({ status: 'MISMATCH', item: `instruction:${instruction}.accounts`, details: `source count=${source.length}, IDL count=${idl.length}` });
   for (let index = 0; index < Math.min(source.length, idl.length); index++) {
@@ -157,6 +172,15 @@ function flattenAccounts(items: Record<string, unknown>[], compositePath: string
   const resolver = object(item.resolver);
   return [{ name: nodeName(item), signer: item.isSigner === true || item.signer === true, writable: item.isMut === true || item.isWritable === true || item.writable === true, optional: item.isOptional === true || item.optional === true, address: string(item.address) ?? (defaultValue.kind === 'publicKeyValueNode' ? string(defaultValue.publicKey) : undefined) ?? (resolver.kind === 'const' ? string(resolver.address) : undefined), pda: item.pda ?? (defaultValue.kind === 'pdaValueNode' ? defaultValue : undefined) ?? (resolver.kind === 'pda' ? resolver : undefined), relations: strings(item.relations), docs: strings(item.docs), compositePath: compositePath.length ? compositePath : undefined }];
 }); }
+function normalizeRemainingAccounts(value: unknown): IdlProgram['instructions'][number]['remainingAccounts'] {
+  const contract = object(value); if (!Object.keys(contract).length) return undefined;
+  const item = object(contract.item), policy = object(contract.policy);
+  const min = number(contract.min); const max = contract.max === null ? null : number(contract.max);
+  if (contract.kind !== 'append' || min === undefined || max === undefined) return undefined;
+  const signer = item.signer === true || item.signer === false || item.signer === 'input' ? item.signer : 'input';
+  const writable = item.writable === true || item.writable === false || item.writable === 'input' ? item.writable : 'input';
+  return { kind: 'append', name: string(contract.name) ?? 'remainingAccounts', min, max, item: { clientType: string(item.clientType) ?? 'accountMeta', signer, writable }, policy: { position: policy.position === 'afterDeclaredAccounts' ? 'afterDeclaredAccounts' : 'afterDeclaredAccounts', order: policy.order === 'preserveInput' ? 'preserveInput' : 'preserveInput' } };
+}
 function records(value: unknown): Record<string, unknown>[] { return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : []; }
 function object(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }

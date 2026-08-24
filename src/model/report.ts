@@ -483,10 +483,10 @@ export interface AuditManifest {
   evidence: Evidence[];
 }
 
-export interface StateAccountType { id: string; name: string; package: string; framework?: string; fields: Array<{ name: string; type: string; visibility?: string }>; visibility: string; serialization: string[]; zeroCopy: boolean; discriminator?: string; declaredSpace?: string; staticSize?: number; dynamicSize: boolean; pdaIds: string[]; initializationSites: string[]; reallocSites: string[]; closeSites: string[]; evidence: Evidence[]; location: SourceLocation; }
+export interface StateAccountType { id: string; name: string; package: string; framework?: string; fields: Array<{ name: string; type: string; visibility?: string; idlName?: string; idlType?: string; idlSkip?: boolean; padding?: boolean }>; visibility: string; serialization: string[]; zeroCopy: boolean; discriminator?: string; declaredSpace?: string; staticSize?: number; dynamicSize: boolean; pdaIds: string[]; initializationSites: string[]; reallocSites: string[]; closeSites: string[]; evidence: Evidence[]; location: SourceLocation; }
 export interface SysvarUse { id: string; name: string; functionName?: string; instructionIds: string[]; accountId?: string; location: SourceLocation; evidence: Evidence[]; }
 export interface RuntimeOperation { id: string; kind: string; api: string; functionName?: string; instructionIds: string[]; location: SourceLocation; evidence: Evidence[]; }
-export interface EventInfo { id: string; name: string; framework?: string; location: SourceLocation; emissionSites: SourceLocation[]; evidence: Evidence[]; }
+export interface EventInfo { id: string; name: string; framework?: string; discriminator?: string; location: SourceLocation; emissionSites: SourceLocation[]; evidence: Evidence[]; }
 export interface ErrorInfo { id: string; name: string; code?: number; message?: string; framework?: string; location: SourceLocation; useSites: SourceLocation[]; evidence: Evidence[]; }
 
 export interface AnalysisDiagnostic { id: string; severity: 'info' | 'warning' | 'error'; category: 'parse' | 'cargo' | 'config' | 'identity' | 'idl' | 'invariant' | 'analysis'; message: string; location?: SourceLocation; }

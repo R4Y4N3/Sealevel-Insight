@@ -9,14 +9,18 @@ export function enrichMetadataFrameworks(root: RustNode, uri: string): { evidenc
   if (/\bShank(?:Instruction|Account|Type|Builder)\b/.test(root.text)) evidence.push({ framework: 'shank-metadata', confidence: 0.9, evidence: [{ description: 'Shank derive metadata' }] });
   for (const enumeration of descendants(root, 'enum_item')) {
     if (!/ShankInstruction/.test(attributesFor(enumeration))) continue;
+    let nextDiscriminator: number | undefined = 0;
     for (const variant of descendants(enumeration, 'enum_variant')) {
       const name = nodeText(field(variant, 'name')); const location = loc(uri, variant); const contextType = `shank:${name}`;
-      instructions.push({ id: `instruction:${uri}:shank:${name}:${location.startLine}`, name, discriminator: /\b=\s*([^,}]+)/.exec(variant.text)?.[1]?.trim(), arguments: variantArguments(variant), contextType, location, confidence: 0.92, evidence: [{ description: '#[derive(ShankInstruction)] enum variant', location }] });
+      const explicit = /=\s*([^,}]+)/.exec(variant.text)?.[1]?.trim(); const explicitNumber = explicit && /^\d+$/.test(explicit) ? Number(explicit) : undefined;
+      const discriminator = explicit ?? (nextDiscriminator !== undefined ? String(nextDiscriminator) : undefined);
+      nextDiscriminator = explicit ? explicitNumber !== undefined ? explicitNumber + 1 : undefined : nextDiscriminator !== undefined ? nextDiscriminator + 1 : undefined;
+      instructions.push({ id: `instruction:${uri}:shank:${name}:${location.startLine}`, name, discriminator, arguments: variantArguments(variant), contextType, location, confidence: 0.92, evidence: [{ description: `#[derive(ShankInstruction)] enum variant${explicit ? ' explicit' : ' implicit'} discriminator${discriminator !== undefined ? ` ${discriminator}` : ''}`, location }] });
       let ordinal = 0;
       for (const attribute of attributesFor(variant).matchAll(/#\[account\s*\(([^\]]*)\)\]/g)) {
         const body = attribute[1]; const index = Number(/^\s*(\d+)/.exec(body)?.[1] ?? ordinal); const accountName = /name\s*=\s*"([^"]+)"/.exec(body)?.[1] ?? `account_${index}`;
         const accountLocation = loc(uri, variant);
-        accounts.push({ id: `account:${uri}:shank:${name}:${index}`, name: accountName, type: 'AccountInfo', wrapperType: 'AccountInfo', contextType, ordinal: index, index, signer: /\b(?:signer|sign)\b/.test(body), writable: /\b(?:writable|mut)\b/.test(body), optional: /\boptional\b/.test(body), raw: true, location: accountLocation, confidence: 0.9, evidence: [{ description: `Shank account metadata ${body.trim()}`, location: accountLocation }] });
+        accounts.push({ id: `account:${uri}:shank:${name}:${index}`, name: accountName, type: 'AccountInfo', wrapperType: 'AccountInfo', contextType, ordinal: index, index, signer: /\b(?:signer|sign|sig)\b/.test(body), writable: /\b(?:writable|write|writ|mut)\b/.test(body), optional: /\boptional\b/.test(body), raw: true, location: accountLocation, confidence: 0.9, evidence: [{ description: `Shank account metadata ${body.trim()}`, location: accountLocation }] });
         ordinal++;
       }
     }

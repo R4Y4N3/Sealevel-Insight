@@ -71,13 +71,13 @@ Exports are portable. HTML is standalone, uses no CDN or remote requests, applie
 
 | Framework/style | Level | Evidence-backed enrichment |
 |---|---|---|
-| Anchor | Enriched | `#[program]`, modern account wrappers and constraints, lifecycle, state/codecs, events/errors, CPIs/PDAs, identities and IDLs |
+| Anchor | Enriched | `#[program]`, modern account wrappers and constraints, lifecycle, state/codecs, events/errors, CPIs/PDAs, identities, default/custom discriminators and IDLs |
 | Native Rust / modular Solana crates | Enriched | entrypoints, discriminator dispatch, account acquisition/validation/access, serialization, sysvars, CPIs and PDAs |
 | Pinocchio | Enriched | current `AccountView`/`Address` patterns, entrypoints, account order/access/resize, validations, CPIs and signer PDAs |
 | Steel | Partial | macros, instructions/accounts/state, entrypoint dispatch, validations, events/errors and generic Solana semantics |
-| Quasar 0.1-style | Partial | verified `#[program]` handlers, `Accounts`/account views, constraints, state, calls, IDL/config evidence and generic Solana semantics |
+| Quasar 0.1-style | Partial | explicit instruction discriminators/arguments, `Ctx`/`CtxWithRemaining`, borrowed account views, constraints, state, calls, IDL/config evidence and generic Solana semantics |
 | Custom Rust | Generic fallback | syntax, symbols, calls, metrics and generic Solana semantics without forcing a framework |
-| Codama / Shank | Partial metadata | configuration/IDL evidence, `ShankInstruction`, `ShankAccount`, and `ShankType` enrichment |
+| Codama / Shank | Enriched metadata | Codama root/additional programs, config-referenced IDLs, node types/privileges/PDAs/discriminators, Shank discriminants/account aliases, and `ShankAccount` field IDL overrides |
 
 ## Language support
 
@@ -97,7 +97,7 @@ State models distinguish static from dynamic layouts and recognize Borsh, Pack, 
 
 ## IDL reconciliation and Semantic Coverage
 
-Configured/common IDL locations are discovered without crawling all of `target`. Modern/legacy Anchor-compatible, Solana IDL, Quasar, and identifiable Codama/Shank forms normalize into a shared representation. Reconciliation compares program identity, instruction names/discriminators/arguments, account order and privileges, PDA metadata, state, events, and errors. `MATCHED`, `SOURCE_ONLY`, `IDL_ONLY`, `MISMATCH`, and `UNKNOWN` are analysis statuses—not vulnerabilities.
+Configured/common IDL locations are discovered without crawling all of `target`; repository-contained `codama.json` `idl` and `additionalIdls` references are followed without executing configuration code. Modern/legacy Anchor-compatible, Solana IDL, Quasar, and Codama/Shank forms normalize into a shared representation. Reconciliation compares program identity, instruction names/default-or-custom discriminators/arguments, account order and privileges, PDA metadata, state field order/types/discriminators, event discriminators, and error codes/messages. Literal discriminators are resolved locally; arbitrary Rust constant expressions remain `UNKNOWN` rather than being evaluated or guessed. `MATCHED`, `SOURCE_ONLY`, `IDL_ONLY`, `MISMATCH`, and `UNKNOWN` are analysis statuses—not vulnerabilities.
 
 Semantic Coverage reports `resolved / total` for parsing, Cargo/program classification, handlers/contexts, account relationships, internal and external calls, reachability, CPI targets, PDA seeds, program IDs, and IDL records. Ambiguous, dynamic, and unknown calls are separate counts so framework/runtime calls do not dilute internal-call resolution. Unresolved reasons remain visible.
 
@@ -150,7 +150,7 @@ Core analysis modules do not import `vscode`. Normal execution performs no netwo
 
 Run `npm run typecheck`, `npm test`, `npm run build`, `npm run package`, `npm run verify:vsix`, `npm run test:integration`, `npm run test:real-world`, `npm run benchmark`, `npm audit`, and `git diff --check` before release assessment.
 
-Static analysis cannot resolve arbitrary macro expansion, target/platform `cfg` predicates without a compilation profile, concrete bodies behind trait-object/generic dispatch, nontrivial compiler type inference/autoderef, runtime-selected function pointers or program IDs, or all custom serialization. Those cases remain explicit dynamic/unresolved evidence. Feature predicates are authoritative only when the imported Cargo metadata contains the resolved feature set; otherwise they remain unknown. Cross-package calls are conservative and require indexed source plus Cargo dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
+Static analysis cannot resolve arbitrary macro expansion or Rust constant evaluation, target/platform `cfg` predicates without a compilation profile, concrete bodies behind trait-object/generic dispatch, nontrivial compiler type inference/autoderef, runtime-selected function pointers or program IDs, or all custom serialization. Those cases remain explicit dynamic/unresolved evidence. Feature predicates are authoritative only when the imported Cargo metadata contains the resolved feature set; otherwise they remain unknown. Cross-package calls are conservative and require indexed source plus Cargo dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros or JavaScript configuration. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
 
 Marketplace publishing still requires the repository owner to confirm the real VS Code publisher account and provide screenshots. No publisher is invented, and this repository does not auto-publish.
 

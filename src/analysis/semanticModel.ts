@@ -1,5 +1,7 @@
 import { ProgramUnit, RuntimeOperation, StateAccountType, SysvarUse } from '../model/report';
 import { descendants, field, nodeText, RustNode } from '../parser/rustAst';
+import { anchorDiscriminator, resolveRustDiscriminator } from '../idl/discriminator';
+import { splitRustExpressions } from '../utils/text';
 
 const SYSVARS = new Set(['Clock', 'Rent', 'EpochSchedule', 'Instructions', 'SlotHashes', 'StakeHistory', 'LastRestartSlot', 'RecentBlockhashes', 'Rewards']);
 
@@ -17,22 +19,31 @@ export function enrichUnifiedSemantics(root: RustNode, uri: string, program: Pro
 
 function extractStates(root: RustNode, uri: string, program: ProgramUnit): void {
   const stateTypes = program.stateTypes ??= [];
+  const anchorSource = (/anchor[-_]lang|anchor_lang::|anchor_spl::/.test(root.text) || program.frameworkEvidence.some(item => item.framework === 'anchor')) && !/quasar[-_]lang|quasar-spl|quasar::/.test(root.text);
   for (const struct of descendants(root, 'struct_item')) {
     const attributes = attributesFor(struct);
     const serialization = serializationFor(`${attributes} ${struct.text}`);
-    const fields = descendants(struct, 'field_declaration').map(item => ({ name: nodeText(field(item, 'name')), type: nodeText(field(item, 'type')), visibility: item.namedChildren.find(child => child?.type === 'visibility_modifier')?.text ?? 'private' }));
+    const fields = descendants(struct, 'field_declaration').map(item => {
+      const fieldAttributes = attributesFor(item);
+      const idlType = /#\[idl_type\s*\(\s*(?:"([^"]+)"|([^\)]+))\s*\)\]/.exec(fieldAttributes);
+      return { name: nodeText(field(item, 'name')), type: nodeText(field(item, 'type')), visibility: item.namedChildren.find(child => child?.type === 'visibility_modifier')?.text ?? 'private', idlName: /#\[idl_name\s*\(\s*"([^"]+)"\s*\)\]/.exec(fieldAttributes)?.[1], idlType: (idlType?.[1] ?? idlType?.[2])?.trim(), idlSkip: /#\[skip\s*\]/.test(fieldAttributes) || undefined, padding: /#\[padding\s*\]/.test(fieldAttributes) || undefined };
+    });
     const stateModule = /(?:^|\/)state(?:\.rs|\/)/.test(uri) && fields.length > 0;
     const isState = stateModule || /#\[(?:account|zero_copy)\b/.test(attributes) || fields.length > 0 && /\b(?:BorshSerialize|AnchorSerialize|Pod|Zeroable|Pack|ShankAccount|ShankType)\b/.test(attributes);
     if (!isState) continue;
     const name = nodeText(field(struct, 'name'));
+    const customDiscriminator = attributeArgument(attributes, 'account', 'discriminator');
+    const discriminator = customDiscriminator
+      ? resolveRustDiscriminator(customDiscriminator)?.value ?? customDiscriminator
+      : anchorSource && /#\[account(?:\s*\]|\s*\()/.test(attributes) ? anchorDiscriminator('account', name) : undefined;
     const dynamicSize = fields.some(item => /\b(?:Vec|String|Box|HashMap|BTreeMap)\s*</.test(item.type) || /\[.*\]/.test(item.type) && !/\[[^;]+;\s*\d+\]/.test(item.type));
     const location = loc(uri, struct);
     const item: StateAccountType = {
       id: `state:${program.name}:${name}:${uri}:${location.startLine}`, name, package: program.name,
       framework: frameworkFor(attributes), fields, visibility: struct.namedChildren.find(child => child?.type === 'visibility_modifier')?.text ?? 'private',
-      serialization, zeroCopy: /zero_copy|Pod|Zeroable/.test(`${attributes} ${struct.text}`), discriminator: /discriminator\s*=\s*([^,\])]+)/.exec(attributes)?.[1]?.trim(),
+      serialization, zeroCopy: /zero_copy|Pod|Zeroable/.test(`${attributes} ${struct.text}`), discriminator,
       declaredSpace: /\b(?:space|LEN)\s*=\s*([^,\])]+)/.exec(`${attributes} ${struct.text}`)?.[1]?.trim(), dynamicSize,
-      pdaIds: [], initializationSites: [], reallocSites: [], closeSites: [], evidence: [{ description: `state/account type with ${serialization.join(', ') || 'framework'} serialization evidence`, location }], location
+      pdaIds: [], initializationSites: [], reallocSites: [], closeSites: [], evidence: [{ description: `state/account type with ${serialization.join(', ') || 'framework'} serialization evidence`, location }, ...(discriminator ? [{ description: customDiscriminator ? `custom account discriminator ${customDiscriminator}` : `Anchor default sha256(account:${name}) discriminator`, location }] : [])], location
     };
     if (!dynamicSize) item.staticSize = staticSize(fields.map(entry => entry.type));
     stateTypes.push(item);
@@ -72,19 +83,26 @@ function extractRuntime(root: RustNode, uri: string, output: RuntimeOperation[])
 }
 
 function extractEventsAndErrors(root: RustNode, uri: string, program: ProgramUnit): void {
+  const framework = /quasar[-_]lang|quasar-spl|quasar::/.test(root.text) ? 'quasar' : 'anchor';
   for (const struct of descendants(root, 'struct_item')) {
     const attributes = attributesFor(struct);
-    if (!/#\[(?:event|event_cpi)\b/.test(attributes)) continue;
+    if (!/#\[event(?:\s*\]|\s*\()/.test(attributes)) continue;
     const name = nodeText(field(struct, 'name')); const location = loc(uri, struct);
-    program.events!.push({ id: `event:${program.name}:${name}`, name, framework: 'anchor', location, emissionSites: [], evidence: [{ description: attributes.trim(), location }] });
+    const customDiscriminator = attributeArgument(attributes, 'event', 'discriminator');
+    const discriminator = customDiscriminator ? resolveRustDiscriminator(customDiscriminator)?.value ?? customDiscriminator : framework === 'anchor' ? anchorDiscriminator('event', name) : undefined;
+    program.events!.push({ id: `event:${program.name}:${name}`, name, framework, discriminator, location, emissionSites: [], evidence: [{ description: attributes.trim(), location }, ...(discriminator ? [{ description: customDiscriminator ? `${framework} custom event discriminator ${customDiscriminator}` : `Anchor default sha256(event:${name}) discriminator`, location }] : [{ description: `${framework} event discriminator is not explicit in this source file`, location }])] });
   }
   for (const enumeration of descendants(root, 'enum_item')) {
     const attributes = attributesFor(enumeration);
     if (!/#\[error_code\b/.test(attributes)) continue;
+    const offsetExpression = attributeArgument(attributes, 'error_code', 'offset');
+    const offset = offsetExpression === undefined ? 6000 : /^\d+$/.test(offsetExpression) ? Number(offsetExpression) : undefined;
+    let nextCode = 0;
     for (const variant of descendants(enumeration, 'enum_variant')) {
       const name = nodeText(field(variant, 'name')); const location = loc(uri, variant);
       const variantAttributes = attributesFor(variant);
-      program.errors!.push({ id: `error:${program.name}:${name}`, name, message: /#\[msg\s*\(\s*"([^"]*)"/.exec(variantAttributes)?.[1], framework: 'anchor', location, useSites: [], evidence: [{ description: '#[error_code] enum variant', location }] });
+      const explicit = /=\s*(\d+)\b/.exec(variant.text)?.[1]; const localCode = explicit ? Number(explicit) : nextCode; nextCode = localCode + 1;
+      program.errors!.push({ id: `error:${program.name}:${name}`, name, code: offset !== undefined ? offset + localCode : undefined, message: /#\[msg\s*\(\s*"([^"]*)"/.exec(variantAttributes)?.[1], framework, location, useSites: [], evidence: [{ description: `#[error_code] enum variant with ${offset !== undefined ? `offset ${offset}` : `unresolved offset ${offsetExpression}`}`, location }] });
     }
   }
   for (const macro of descendants(root, 'macro_invocation')) {
@@ -107,6 +125,23 @@ function extractEventsAndErrors(root: RustNode, uri: string, program: ProgramUni
 }
 
 function attributesFor(node: RustNode): string { const attributes: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { attributes.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return attributes.join('\n'); }
+function attributeArgument(attributes: string, attribute: string, argument: string): string | undefined {
+  const marker = `#[${attribute}`; let search = 0;
+  while ((search = attributes.indexOf(marker, search)) >= 0) {
+    const open = attributes.indexOf('(', search + marker.length); if (open < 0) return undefined;
+    let depth = 1, quote = '', escaped = false, index = open + 1;
+    for (; index < attributes.length && depth > 0; index++) {
+      const char = attributes[index];
+      if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === quote) quote = ''; continue; }
+      if (char === '"' || char === "'") quote = char; else if (char === '(') depth++; else if (char === ')') depth--;
+    }
+    if (depth === 0) for (const item of splitRustExpressions(attributes.slice(open + 1, index - 1))) {
+      const match = new RegExp(`^${argument}\\s*=\\s*([\\s\\S]+)$`).exec(item.trim()); if (match) return match[1].trim();
+    }
+    search = Math.max(index, search + marker.length);
+  }
+  return undefined;
+}
 function serializationFor(value: string): string[] { return [...new Set([/Borsh|AnchorSerialize|AnchorDeserialize/.test(value) ? 'borsh' : '', /\bPack\b/.test(value) ? 'pack' : '', /Pod|Zeroable|bytemuck|zero_copy/.test(value) ? 'zero-copy' : '', /serde/.test(value) ? 'serde' : ''].filter(Boolean))]; }
 function frameworkFor(value: string): string | undefined { if (/ShankAccount|ShankType/.test(value)) return 'shank'; if (/#\[(?:account|zero_copy)/.test(value)) return 'anchor-or-quasar'; if (/account!/.test(value)) return 'steel'; return undefined; }
 function staticSize(types: string[]): number | undefined { let total = 0; for (const type of types) { const size = primitiveSize(type); if (size === undefined) return undefined; total += size; } return total; }

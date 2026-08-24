@@ -377,6 +377,20 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(tokenProgram.executable, true); assert.equal(tokenProgram.addressValidated, true); assert.equal(system.ownerValidated, true); assert.equal(system.ownerExpectation, 'SystemProgram');
   });
 
+  it('extracts Quasar explicit discriminators, arguments, remaining contexts, and borrowed mutable wrappers', async () => {
+    const report = await sampleReport(`use quasar_lang::prelude::*;
+#[program] mod p { #[instruction(discriminator = [0, 1])] pub fn write(ctx: CtxWithRemaining<Write>, amount: u64) -> Result<(), ProgramError> { Ok(()) } }
+#[derive(Accounts)] pub struct Write<'info> { pub payer: &'info mut Signer, pub vault: &'info mut Account<Vault>, pub system_program: &'info Program<System> }
+#[account(discriminator = 2)] pub struct Vault { pub amount: u64 }
+#[event(discriminator = 4)] pub struct Written { pub amount: u64 }`);
+    const program = report.programs[0]; const instruction = program.instructions[0];
+    assert.equal(instruction.contextType, 'Write'); assert.equal(instruction.discriminator, '[0,1]'); assert.deepEqual(instruction.arguments, [{ name: 'amount', type: 'u64' }]);
+    assert.equal(program.accounts.find(item => item.name === 'payer')?.signer, true); assert.equal(program.accounts.find(item => item.name === 'payer')?.writable, true);
+    assert.equal(program.accounts.find(item => item.name === 'vault')?.stateType, 'Vault'); assert.equal(program.accounts.find(item => item.name === 'vault')?.writable, true);
+    assert.equal(program.accounts.find(item => item.name === 'system_program')?.executable, true); assert.ok(program.securitySurface.remainingAccounts > 0);
+    assert.deepEqual(program.events?.map(item => [item.name, item.discriminator, item.framework]), [['Written', '[4]', 'quasar']]);
+  });
+
   it('propagates account lifecycle and mutation sites into instruction dossiers', async () => {
     const report = await sampleReport('use anchor_lang::prelude::*; #[program] pub mod p { pub fn create(ctx: Context<Create>) -> Result<()> { ctx.accounts.vault.set_inner(Vault { value: 1 }); Ok(()) } } #[derive(Accounts)] pub struct Create<\'info> { #[account(init, payer = payer, space = 16, close = payer)] pub vault: Account<\'info, Vault>, #[account(mut)] pub payer: Signer<\'info>, pub system_program: Program<\'info, System> } #[account] pub struct Vault { pub value: u64 }');
     const surface = report.programs[0].instructions[0].reachableSurface!;
@@ -399,9 +413,11 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   });
 
   it('extracts Shank tuple-variant arguments for source and IDL reconciliation', async () => {
-    const report = await sampleReport('#[derive(ShankInstruction)] enum Instruction { AddCar(AddCarArgs), #[account(0, writable, name="vault")] Reset } struct AddCarArgs { value: u64 }');
+    const report = await sampleReport('#[derive(ShankInstruction)] enum Instruction { AddCar(AddCarArgs), #[account(0, sig, writ, name="vault")] Reset } struct AddCarArgs { value: u64 }');
     const instruction = report.programs[0].instructions.find(item => item.name === 'AddCar');
-    assert.deepEqual(instruction?.arguments, [{ name: 'addCarArgs', type: 'AddCarArgs' }]);
+    assert.deepEqual(instruction?.arguments, [{ name: 'addCarArgs', type: 'AddCarArgs' }]); assert.equal(instruction?.discriminator, '0');
+    assert.equal(report.programs[0].instructions.find(item => item.name === 'Reset')?.discriminator, '1');
+    const account = report.programs[0].accounts.find(item => item.name === 'vault')!; assert.equal(account.signer, true); assert.equal(account.writable, true);
   });
 });
 

@@ -347,7 +347,7 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
   surface.writableSignals += occurrence(/is_writable/g);
   surface.ownerValidationSignals += occurrence(/\.owner\(|owner\s*==/g);
   surface.addressValidationSignals += occurrence(/address\s*=|key\(\)\s*==/g);
-  surface.remainingAccounts += occurrence(/remaining_accounts/g);
+  surface.remainingAccounts += occurrence(/remaining_accounts|CtxWithRemaining/g);
   surface.rawOrUncheckedAccounts += occurrence(/UncheckedAccount|AccountInfo|AccountView/g);
   surface.manualAccountIteration += occurrence(/accounts\.iter|next_account_info|remaining_accounts\.iter/g);
   surface.manualSignerChecks += occurrence(/is_signer/g);

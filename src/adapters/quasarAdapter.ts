@@ -1,6 +1,7 @@
 import { AccountConstraint, AccountInfo, FrameworkEvidence, InstructionInfo } from '../model/report';
 import { RustNode, descendants, field, nodeText } from '../parser/rustAst';
 import { splitRustExpressions } from '../utils/text';
+import { resolveRustDiscriminator } from '../idl/discriminator';
 
 export function enrichQuasar(source: string): FrameworkEvidence[] {
   const evidence = ['quasar-lang', 'quasar_lang', 'quasar-spl', 'Quasar.toml', 'quasar::', 'derive(Accounts)'].filter(pattern => source.includes(pattern));
@@ -15,8 +16,13 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
     if (!attributesFor(module).includes('#[program]')) continue;
     for (const fn of descendants(module, 'function_item')) {
       const name = nodeText(field(fn, 'name'));
-      const contextType = /\bCtx\s*<\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(fn.text)?.[1];
-      if (name) instructions.push({ id: `instruction:${uri}:quasar:${name}:${fn.startPosition.row + 1}`, name, handler: name, functionName: name, contextType, location: loc(uri, fn), confidence: 0.94, evidence: [{ description: 'Quasar #[program] handler', location: loc(uri, fn) }] });
+      const contextType = /\bCtx(?:WithRemaining)?\s*<\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(fn.text)?.[1];
+      const attributes = attributesFor(fn);
+      const discriminatorExpression = attributeArgument(attributes, 'instruction', 'discriminator');
+      const discriminator = resolveRustDiscriminator(discriminatorExpression)?.value;
+      const parameters = field(fn, 'parameters');
+      const arguments_ = parameters ? descendants(parameters, 'parameter').filter(parameter => !/\bCtx(?:WithRemaining)?\s*</.test(parameter.text)).map(parameter => ({ name: parameter.childForFieldName('pattern')?.text ?? parameter.namedChildren[0]?.text ?? 'arg', type: parameter.childForFieldName('type')?.text })) : [];
+      if (name) instructions.push({ id: `instruction:${uri}:quasar:${name}:${fn.startPosition.row + 1}`, name, handler: name, functionName: name, contextType, discriminator, arguments: arguments_, location: loc(uri, fn), confidence: discriminator ? 0.97 : 0.9, evidence: [{ description: 'Quasar #[program] handler', location: loc(uri, fn) }, ...(discriminatorExpression ? [{ description: `Quasar instruction discriminator ${discriminatorExpression}`, location: loc(uri, fn) }] : [])] });
     }
   }
   const seedDefinitions = new Map<string, { constants: string[]; parameters: string[] }>();
@@ -36,7 +42,9 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
       const fieldAttributes = attributesFor(fieldNode);
       const constraints = parseConstraints(fieldAttributes, uri, fieldNode);
       const optional = /^\s*Option\s*</.test(type);
-      const normalizedType = optional ? type.replace(/^\s*Option\s*<\s*/, '').replace(/>\s*$/, '') : type;
+      const optionalInner = optional ? type.replace(/^\s*Option\s*<\s*/, '').replace(/>\s*$/, '') : type;
+      const mutableReference = /^\s*&\s*'?[A-Za-z0-9_]*\s+mut\b/.test(optionalInner);
+      const normalizedType = optionalInner.replace(/^\s*&\s*'?[A-Za-z0-9_]*\s*(?:mut\s+)?/, '').trim();
       const wrapperType = /^([A-Za-z_][A-Za-z0-9_:]*)/.exec(normalizedType)?.[1]?.split('::').at(-1);
       const stateType = /^(?:Account|AccountLoader|InterfaceAccount|Program|Interface|Sysvar)\s*</.test(normalizedType) ? /<\s*([^>,]+)/.exec(normalizedType)?.[1]?.trim() : undefined;
       const address = constraints.find(item => item.kind === 'address')?.expression;
@@ -49,7 +57,7 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
       }
       const initializing = constraints.some(item => item.kind === 'init' || item.kind === 'init(idempotent)');
       const closing = constraints.some(item => item.kind === 'close');
-      const writable = constraints.some(item => item.kind === 'mut' || item.kind === 'realloc') || initializing || closing;
+      const writable = mutableReference || constraints.some(item => item.kind === 'mut' || item.kind === 'realloc') || initializing || closing;
       const lifecycle: NonNullable<AccountInfo['lifecycle']> = initializing ? ['init', 'create', 'write'] : writable ? ['write'] : ['read'];
       if (constraints.some(item => item.kind === 'realloc')) lifecycle.push('realloc');
       if (closing) lifecycle.push('close');
@@ -75,4 +83,21 @@ function topLevelEquals(value: string): number { let depth = 0; let quote = ''; 
 
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }
 function attributesFor(node: RustNode): string { const items: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { items.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return items.join('\n'); }
+function attributeArgument(attributes: string, attribute: string, argument: string): string | undefined {
+  const marker = `#[${attribute}`; let search = 0;
+  while ((search = attributes.indexOf(marker, search)) >= 0) {
+    const open = attributes.indexOf('(', search + marker.length); if (open < 0) return undefined;
+    let depth = 1, quote = '', escaped = false, index = open + 1;
+    for (; index < attributes.length && depth > 0; index++) {
+      const char = attributes[index];
+      if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === quote) quote = ''; continue; }
+      if (char === '"' || char === "'") quote = char; else if (char === '(') depth++; else if (char === ')') depth--;
+    }
+    if (depth === 0) for (const item of splitRustExpressions(attributes.slice(open + 1, index - 1))) {
+      const match = new RegExp(`^${argument}\\s*=\\s*([\\s\\S]+)$`).exec(item.trim()); if (match) return match[1].trim();
+    }
+    search = Math.max(index, search + marker.length);
+  }
+  return undefined;
+}
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

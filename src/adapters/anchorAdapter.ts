@@ -1,6 +1,7 @@
 import { InstructionInfo, AccountInfo, AccountConstraint, AccountRelation } from '../model/report';
 import { RustNode, descendants, field, nodeText } from '../parser/rustAst';
 import { splitRustExpressions } from '../utils/text';
+import { anchorDiscriminator, resolveRustDiscriminator } from '../idl/discriminator';
 
 export function enrichAnchor(root: RustNode, uri: string): { instructions: InstructionInfo[]; accounts: AccountInfo[] } {
   const instructions: InstructionInfo[] = [];
@@ -10,11 +11,16 @@ export function enrichAnchor(root: RustNode, uri: string): { instructions: Instr
     for (const fn of descendants(module, 'function_item')) {
       const name = nodeText(field(fn, 'name'));
       const location = loc(uri, fn);
+      const instructionAttributes = attributesFor(fn);
+      const customDiscriminator = attributeArgument(instructionAttributes, 'instruction', 'discriminator');
+      const discriminator = customDiscriminator
+        ? resolveRustDiscriminator(customDiscriminator)?.value ?? customDiscriminator
+        : anchorDiscriminator('global', name);
       const generic = /Context\s*<([^>]*)/.exec(fn.text)?.[1];
       const context = generic?.split(',').map(part => part.trim().replace(/<.*$/, '')).reverse().find(part => /^[A-Z][A-Za-z0-9_]*$/.test(part));
       const argumentsNode = field(fn, 'parameters');
       const args = argumentsNode ? descendants(argumentsNode, 'parameter').filter(parameter => !/Context\s*</.test(parameter.text)).map(parameter => ({ name: parameter.childForFieldName('pattern')?.text ?? parameter.namedChildren[0]?.text ?? 'arg', type: parameter.childForFieldName('type')?.text })) : [];
-      instructions.push({ id: `instruction:${uri}:${name}:${location.startLine}`, name, handler: name, location, confidence: 0.98, evidence: [{ description: '#[program] module function', location }], functionName: name, contextType: context, arguments: args });
+      instructions.push({ id: `instruction:${uri}:${name}:${location.startLine}`, name, handler: name, discriminator, location, confidence: 0.98, evidence: [{ description: '#[program] module function', location }, { description: customDiscriminator ? `Anchor custom instruction discriminator ${customDiscriminator}` : `Anchor default sha256(global:${name}) discriminator`, location }], functionName: name, contextType: context, arguments: args });
     }
   }
   for (const struct of descendants(root, 'struct_item')) {
@@ -106,4 +112,21 @@ function genericArguments(type: string): string[] { const match = /<([\s\S]*)>/.
 function valueOf(items: AccountConstraint[], kind: string): string | undefined { return items.find(item => item.kind === kind)?.expression; }
 function has(items: AccountConstraint[], kind: string): boolean { return items.some(item => item.kind === kind); }
 function attributesFor(node: RustNode): string { const values: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { values.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return values.join('\n'); }
+function attributeArgument(attributes: string, attribute: string, argument: string): string | undefined {
+  const marker = `#[${attribute}`; let search = 0;
+  while ((search = attributes.indexOf(marker, search)) >= 0) {
+    const open = attributes.indexOf('(', search + marker.length); if (open < 0) return undefined;
+    let depth = 1, quote = '', escaped = false, index = open + 1;
+    for (; index < attributes.length && depth > 0; index++) {
+      const char = attributes[index];
+      if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === quote) quote = ''; continue; }
+      if (char === '"' || char === "'") quote = char; else if (char === '(') depth++; else if (char === ')') depth--;
+    }
+    if (depth === 0) for (const item of splitRustExpressions(attributes.slice(open + 1, index - 1))) {
+      const match = new RegExp(`^${argument}\\s*=\\s*([\\s\\S]+)$`).exec(item.trim()); if (match) return match[1].trim();
+    }
+    search = Math.max(index, search + marker.length);
+  }
+  return undefined;
+}
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }

@@ -8,7 +8,7 @@ import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
 import { enrichSteel } from '../../src/adapters/steelAdapter';
 import { enrichQuasar } from '../../src/adapters/quasarAdapter';
-import { normalizeIdl, reconcileIdl, reconcileIdls } from '../../src/idl/reconciliation';
+import { normalizeIdl, normalizeIdls, reconcileIdl, reconcileIdls } from '../../src/idl/reconciliation';
 import { parseRust } from '../../src/parser/rustParser';
 import { buildCallGraph } from '../../src/analysis/callGraph';
 import { discoverIdls } from '../../src/idl/discovery';
@@ -155,6 +155,77 @@ describe('Sealevel Insight analyzer', () => {
     assert.deepEqual(idl.validationErrors, ['v0.1.0 requires address.', 'instructions[0] requires a byte-array discriminator.', 'instructions[0] requires accounts.', 'instructions[0] requires args.']);
   });
 
+  it('derives modern Anchor default and literal custom discriminators without inventing event_cpi events', async () => {
+    const source = `use anchor_lang::prelude::*;
+#[program] mod p {
+  pub fn initialize(_ctx: Context<LogContext>) -> Result<()> { Ok(()) }
+  #[instruction(discriminator = [1, 2, 3])] pub fn compact(_ctx: Context<LogContext>) -> Result<()> { Ok(()) }
+}
+#[account] pub struct Vault { pub value: u64 }
+#[account(discriminator = b"CV")] pub struct CompactVault { pub value: u8 }
+#[event] pub struct Changed { pub value: u64 }
+#[event(discriminator = 9)] pub struct CompactChanged { pub value: u8 }
+#[event_cpi] #[derive(Accounts)] pub struct LogContext<'info> { pub authority: Signer<'info> }`;
+    const report = await analyzeSources([{ uri: 'anchor-discriminators/lib.rs', source, packageName: 'anchor-discriminators' }], wasm);
+    const program = report.programs[0];
+    assert.equal(program.instructions.find(item => item.name === 'initialize')?.discriminator, '[175,175,109,31,13,152,155,237]');
+    assert.equal(program.instructions.find(item => item.name === 'compact')?.discriminator, '[1,2,3]');
+    assert.equal(program.stateTypes?.find(item => item.name === 'Vault')?.discriminator, '[211,8,232,43,2,152,117,119]');
+    assert.equal(program.stateTypes?.find(item => item.name === 'CompactVault')?.discriminator, '[67,86]');
+    assert.deepEqual(program.events?.map(item => [item.name, item.discriminator]), [['Changed', '[78,218,231,86,31,167,245,14]'], ['CompactChanged', '[9]']]);
+    assert.equal(program.events?.some(item => item.name === 'LogContext'), false);
+  });
+
+  it('derives Anchor and Quasar error codes using declared enum discriminants and offsets', async () => {
+    const anchor = await analyzeSources([{ uri: 'errors/anchor.rs', packageName: 'errors', source: `use anchor_lang::prelude::*; #[error_code] enum DefaultErrors { #[msg("first")] First, Second = 7, Third } #[error_code(offset = 100)] enum OffsetErrors { Other }` }], wasm);
+    assert.deepEqual(anchor.programs[0].errors?.map(item => [item.name, item.code, item.message]), [['First', 6000, 'first'], ['Second', 6007, undefined], ['Third', 6008, undefined], ['Other', 100, undefined]]);
+    const quasar = await analyzeSources([{ uri: 'errors/quasar.rs', packageName: 'errors', source: `use quasar_lang::prelude::*; #[error_code] enum ProgramError { Invalid, Overflow }` }], wasm);
+    assert.deepEqual(quasar.programs[0].errors?.map(item => [item.name, item.code, item.framework]), [['Invalid', 6000, 'quasar'], ['Overflow', 6001, 'quasar']]);
+  });
+
+  it('normalizes complete Codama roots including additional programs and node semantics', () => {
+    const root = {
+      kind: 'rootNode', version: '1.0.0', program: {
+        kind: 'programNode', name: 'mainProgram', publicKey: 'Main111', version: '2.0.0',
+        instructions: [{ kind: 'instructionNode', name: 'writeValue', discriminators: [{ kind: 'fieldDiscriminatorNode', name: 'tag', offset: 0 }], accounts: [{ kind: 'instructionAccountNode', name: 'vault', isWritable: true, isSigner: false, isOptional: true, defaultValue: { kind: 'pdaValueNode', pda: { kind: 'pdaLinkNode', name: 'vault' }, seeds: [] } }], arguments: [{ kind: 'instructionArgumentNode', name: 'tag', defaultValueStrategy: 'omitted', defaultValue: { kind: 'numberValueNode', number: 7 }, type: { kind: 'numberTypeNode', format: 'u8' } }, { kind: 'instructionArgumentNode', name: 'value', type: { kind: 'optionTypeNode', item: { kind: 'numberTypeNode', format: 'u64' } } }] }],
+        accounts: [{ kind: 'accountNode', name: 'vault', idlName: 'Vault', discriminators: [{ kind: 'fieldDiscriminatorNode', name: 'tag', offset: 0 }], data: { kind: 'structTypeNode', fields: [{ kind: 'structFieldTypeNode', name: 'tag', defaultValueStrategy: 'omitted', defaultValue: { kind: 'bytesValueNode', data: '0102', encoding: 'base16' }, type: { kind: 'bytesTypeNode' } }, { kind: 'structFieldTypeNode', name: 'value', type: { kind: 'numberTypeNode', format: 'u64' } }] } }],
+        definedTypes: [{ kind: 'definedTypeNode', name: 'payload', type: { kind: 'structTypeNode', fields: [] } }], errors: [{ kind: 'errorNode', name: 'badValue', code: 10, message: 'bad value' }], constants: [], pdas: []
+      }, additionalPrograms: [{ kind: 'programNode', name: 'helperProgram', publicKey: 'Help111', instructions: [], accounts: [], definedTypes: [], errors: [], constants: [], pdas: [] }]
+    };
+    const programs = normalizeIdls(root);
+    assert.equal(programs.length, 2); assert.deepEqual(programs.map(item => item.address), ['Main111', 'Help111']);
+    assert.equal(programs[0].instructions[0].discriminator, '7'); assert.deepEqual(programs[0].instructions[0].arguments, [{ name: 'value', type: 'Option<u64>', docs: undefined }]);
+    assert.deepEqual(programs[0].instructions[0].accounts[0], { name: 'vault', signer: false, writable: true, optional: true, address: undefined, pda: root.program.instructions[0].accounts[0].defaultValue, relations: undefined, docs: undefined, compositePath: undefined });
+    assert.equal(programs[0].accounts?.[0].discriminator, '[1,2]'); assert.equal(programs[0].types?.some(item => item.name === 'payload'), true); assert.equal(programs[0].types?.some(item => item.name === 'vault'), true);
+  });
+
+  it('normalizes Quasar IDL resolver metadata into shared PDA and address evidence', () => {
+    const idl = normalizeIdl({ spec: 'quasar-idl/1.0.0', name: 'q', instructions: [{ name: 'make', discriminator: [0], accounts: [{ name: 'vault', writable: true, resolver: { kind: 'pda', program: { kind: 'programId' }, seeds: [{ kind: 'const', value: [118] }] } }, { name: 'systemProgram', resolver: { kind: 'const', address: '11111111111111111111111111111111' } }], args: [] }] })!;
+    assert.equal(idl.instructions[0].accounts[0].pda && typeof idl.instructions[0].accounts[0].pda === 'object', true);
+    assert.equal(idl.instructions[0].accounts[1].address, '11111111111111111111111111111111');
+  });
+
+  it('reconciles state layouts and resolved discriminators while preserving unknown constant expressions', () => {
+    const location = { uri: 'source.rs', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 };
+    const base = { instructions: [{ name: 'run', discriminator: 'CUSTOM_DISC', location, confidence: 1, evidence: [] }], stateTypes: [{ id: 'state:Vault', name: 'Vault', package: 'p', fields: [{ name: 'value', type: 'u64' }], visibility: 'pub', serialization: ['borsh'], zeroCopy: false, discriminator: '[1,2]', dynamicSize: false, pdaIds: [], initializationSites: [], reallocSites: [], closeSites: [], evidence: [], location }], events: [{ id: 'event:Changed', name: 'Changed', discriminator: '[3]', location, emissionSites: [], evidence: [] }] };
+    const idl = normalizeIdl({ instructions: [{ name: 'run', discriminator: [9], accounts: [], args: [] }], accounts: [{ name: 'Vault', discriminator: [9] }], types: [{ name: 'Vault', type: { kind: 'struct', fields: [{ name: 'value', type: 'u32' }] } }], events: [{ name: 'Changed', discriminator: [8] }] })!;
+    const result = reconcileIdl(base, idl);
+    assert.equal(result.reconciliations.find(item => item.item === 'instruction:run.discriminator')?.status, 'UNKNOWN');
+    assert.equal(result.reconciliations.find(item => item.item === 'state:Vault.discriminator')?.status, 'MISMATCH');
+    assert.equal(result.reconciliations.find(item => item.item === 'state:Vault.field:0.type')?.status, 'MISMATCH');
+    assert.equal(result.reconciliations.find(item => item.item === 'event:Changed.discriminator')?.status, 'MISMATCH');
+  });
+
+  it('normalizes Shank discriminants and honors Shank field IDL overrides during reconciliation', async () => {
+    const legacy = normalizeIdl({ instructions: [{ name: 'Create', discriminant: { type: 'u8', value: 4 }, accounts: [], args: [] }] })!;
+    assert.equal(legacy.instructions[0].discriminator, '4');
+    const source = `use shank::ShankAccount; #[derive(BorshSerialize, BorshDeserialize, ShankAccount)] pub struct Metadata { pub value: u32, #[idl_name("displayValue")] #[idl_type("u64")] pub wrapped: Wrapper, #[skip] pub internal: String }`;
+    const report = await analyzeSources([{ uri: 'shank-fields/lib.rs', source, packageName: 'shank-fields' }], wasm);
+    const idl = normalizeIdl({ instructions: [], accounts: [{ name: 'Metadata', type: { kind: 'struct', fields: [{ name: 'value', type: 'u32' }, { name: 'displayValue', type: 'u64' }] } }] })!;
+    const result = reconcileIdl(report.programs[0], idl);
+    assert.equal(result.reconciliations.some(item => item.status === 'MISMATCH'), false, JSON.stringify(result.reconciliations));
+  });
+
   it('resolves only unambiguous direct calls in a call graph', async () => {
     const parsed = await parseRust('calls.rs', 'fn helper() {} fn handler() { helper(); missing(); }', wasm);
     const graph = buildCallGraph([{ uri: 'calls.rs', root: parsed.tree!.rootNode }], [{ name: 'helper', location: { uri: 'calls.rs', startLine: 1, startColumn: 0, endLine: 1, endColumn: 12 }, lines: 1, complexity: 1, parameters: 0, isPublic: false, isUnsafe: false }]);
@@ -174,6 +245,18 @@ describe('Sealevel Insight analyzer', () => {
     const idls = await discoverIdls(path.resolve(root, 'fixtures'));
     assert.equal(idls.length, 1);
     assert.equal(idls[0].instructions[0].name, 'withdraw');
+  });
+
+  it('follows repository-contained Codama config IDL and additionalIdls paths', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-codama-'));
+    try {
+      await fs.mkdir(path.join(directory, 'interfaces'));
+      await fs.writeFile(path.join(directory, 'codama.json'), JSON.stringify({ idl: 'interfaces/custom.json', additionalIdls: ['interfaces/helper.json'] }));
+      await fs.writeFile(path.join(directory, 'interfaces/custom.json'), JSON.stringify({ address: 'Main111', metadata: { name: 'main' }, instructions: [] }));
+      await fs.writeFile(path.join(directory, 'interfaces/helper.json'), JSON.stringify({ address: 'Help111', metadata: { name: 'helper' }, instructions: [] }));
+      const idls = await discoverIdls(directory);
+      assert.deepEqual(idls.map(item => item.name), ['main', 'helper']);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
   });
 
   it('keeps native account relationships evidence-backed', async () => {

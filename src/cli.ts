@@ -13,13 +13,13 @@ import { buildCapabilities } from './analysis/capabilities';
 import { enrichProgramIdentities } from './discovery/programIdentity';
 import { analysisCacheKey, clearAnalysisCache, readAnalysisCache, writeAnalysisCache } from './core/cache';
 import { AnalysisPolicy, evaluatePolicy } from './core/policy';
-import { AnalysisDiagnostic, WorkspaceReport } from './model/report';
+import { AnalysisDiagnostic, CompilationProfile, WorkspaceReport } from './model/report';
 import { mapConcurrent } from './utils/concurrency';
 import { walkFiles } from './discovery/fileWalker';
 import { applyCargoMetadata } from './discovery/cargoMetadata';
 import { refreshAuditProducts } from './analysis/auditProducts';
 
-interface CliAnalysisOptions { include: string[]; exclude: string[]; includeTests: boolean; enableIdl: boolean; cache: boolean; maxFileSize: number; cargoMetadata?: string; }
+interface CliAnalysisOptions { include: string[]; exclude: string[]; includeTests: boolean; enableIdl: boolean; cache: boolean; maxFileSize: number; cargoMetadata?: string; target?: string; cfgOptions: string[]; cfgKnowledge: 'partial' | 'complete'; compilationMode: 'normal' | 'test'; debugAssertions?: boolean; }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -52,13 +52,13 @@ async function analyze(root: string, args: string[]): Promise<WorkspaceReport> {
     include: options(args, '--include').length ? options(args, '--include') : ['**/*.rs'],
     exclude: options(args, '--exclude').length ? options(args, '--exclude') : ['**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/dist-test/**', '**/.sealevel-insight-cache/**'],
     includeTests: args.includes('--include-tests'), enableIdl: args.includes('--enable-idl') || !args.includes('--disable-idl'), cache: !args.includes('--no-cache'),
-    maxFileSize: numberOption(args, '--max-file-size', 5_242_880), cargoMetadata: option(args, '--cargo-metadata')
+    maxFileSize: numberOption(args, '--max-file-size', 5_242_880), cargoMetadata: option(args, '--cargo-metadata'), target: option(args, '--target'), cfgOptions: options(args, '--cfg'), cfgKnowledge: args.includes('--cfg-complete') ? 'complete' : 'partial', compilationMode: args.includes('--test-profile') ? 'test' : 'normal', debugAssertions: args.includes('--debug-assertions') ? true : args.includes('--no-debug-assertions') ? false : undefined
   };
   const collected = await rustSources(root, config);
   const cacheKey = analysisCacheKey(collected.sources, config); const cacheDir = cacheDirectory(root);
   if (config.cache) { const cached = await readAnalysisCache(cacheDir, cacheKey); if (cached) return cached; }
   const wasm = path.resolve(__dirname, 'tree-sitter-rust.wasm'); const runtime = path.resolve(__dirname, 'tree-sitter.wasm');
-  const report = await analyzeSources(collected.sources, wasm, runtime);
+  const report = await analyzeSources(collected.sources, wasm, runtime, undefined, { compilationProfile: compilationProfile(config) });
   report.workspace = { name: path.basename(root), roots: [root] };
   report.analysisDiagnostics?.push(...collected.diagnostics); report.diagnostics.push(...collected.diagnostics.map(item => item.message));
   const identityDiagnostics = await enrichProgramIdentities(root, report.programs); report.analysisDiagnostics?.push(...identityDiagnostics); report.diagnostics.push(...identityDiagnostics.map(item => item.message));
@@ -101,14 +101,15 @@ function isWorkspaceReport(value: unknown): value is WorkspaceReport { return !!
 function option(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index < 0) return undefined; const value = args[index + 1]; if (!value || value.startsWith('--')) throw new Error(`${name} requires a value.`); return value; }
 function options(args: string[], name: string): string[] { const values: string[] = []; for (let index = 0; index < args.length; index++) if (args[index] === name) { const value = args[index + 1]; if (!value || value.startsWith('--')) throw new Error(`${name} requires a value.`); values.push(value); index++; } return values; }
 function positional(args: string[]): string[] { const values: string[] = []; for (let index = 0; index < args.length; index++) { if (args[index].startsWith('--')) { if (valueOptions.has(args[index])) index++; continue; } values.push(args[index]); } return values; }
-const valueOptions = new Set(['--format', '--output', '--include', '--exclude', '--scope-file', '--max-file-size', '--cargo-metadata', '--max-function-complexity', '--max-instruction-review-complexity', '--minimum-semantic-coverage']);
+const valueOptions = new Set(['--format', '--output', '--include', '--exclude', '--scope-file', '--max-file-size', '--cargo-metadata', '--target', '--cfg', '--max-function-complexity', '--max-instruction-review-complexity', '--minimum-semantic-coverage']);
 function numberOption(args: string[], name: string, fallback: number): number { const value = option(args, name); if (value === undefined) return fallback; const parsed = Number(value); if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} requires a non-negative number.`); return parsed; }
 function policyFrom(args: string[]): AnalysisPolicy { return { maxFunctionComplexity: optionalNumber(args, '--max-function-complexity'), maxInstructionReviewComplexity: optionalNumber(args, '--max-instruction-review-complexity'), minimumSemanticCoverage: optionalNumber(args, '--minimum-semantic-coverage'), noParseErrors: args.includes('--no-parse-errors'), noIdlMismatches: args.includes('--no-idl-mismatches') }; }
 function optionalNumber(args: string[], name: string): number | undefined { return args.includes(name) ? numberOption(args, name, 0) : undefined; }
 function hasAny(args: string[], names: string[]): boolean { return names.some(name => args.includes(name)); }
 function cacheDirectory(root: string): string { return path.join(root, '.sealevel-insight-cache'); }
+function compilationProfile(config: CliAnalysisOptions): CompilationProfile | undefined { if (!config.target && !config.cfgOptions.length && config.cfgKnowledge === 'partial' && config.compilationMode === 'normal' && config.debugAssertions === undefined) return undefined; return { target: config.target, mode: config.compilationMode, debugAssertions: config.debugAssertions, cfgOptions: [...new Set(config.cfgOptions)].sort(), cfgKnowledge: config.cfgKnowledge, evidence: [{ description: `CLI compilation profile${config.target ? ` target ${config.target}` : ''}; ${config.cfgKnowledge} cfg option set` }] }; }
 function nearestRoot(file: string, roots: string[]): string | undefined { return roots.filter(root => file.startsWith(`${root}${path.sep}`)).sort((a, b) => b.length - a.length)[0]; }
 function globRegex(pattern: string): RegExp { let expression = '^'; const normalized = pattern.replace(/\\/g, '/'); for (let index = 0; index < normalized.length; index++) { const char = normalized[index]; if (char === '*' && normalized[index + 1] === '*') { index++; if (normalized[index + 1] === '/') { index++; expression += '(?:.*/)?'; } else expression += '.*'; } else if (char === '*') expression += '[^/]*'; else if (char === '?') expression += '[^/]'; else expression += char.replace(/[.+^${}()|[\]\\]/g, '\\$&'); } return new RegExp(`${expression}$`); }
-function usage(): string { return `Sealevel Insight\n\nUsage:\n  sealevel-insight analyze [root] [options]\n  sealevel-insight scope [root] [options]\n  sealevel-insight diff <before.json> <after.json> [--format json|markdown|html] [--output file]\n  sealevel-insight baseline save [root] [--output baseline.json]\n  sealevel-insight cache clear [root]\n\nAnalysis options:\n  --format json|markdown|html  --output file  --include glob  --exclude glob\n  --include-tests  --enable-idl  --disable-idl  --no-cache  --max-file-size bytes\n  --cargo-metadata path        Import saved cargo metadata --format-version 1 JSON\n  --fail-on-analysis-error  --no-parse-errors  --no-idl-mismatches\n  --max-function-complexity n  --max-instruction-review-complexity n\n  --minimum-semantic-coverage ratio\n`; }
+function usage(): string { return `Sealevel Insight\n\nUsage:\n  sealevel-insight analyze [root] [options]\n  sealevel-insight scope [root] [options]\n  sealevel-insight diff <before.json> <after.json> [--format json|markdown|html] [--output file]\n  sealevel-insight baseline save [root] [--output baseline.json]\n  sealevel-insight cache clear [root]\n\nAnalysis options:\n  --format json|markdown|html  --output file  --include glob  --exclude glob\n  --include-tests  --enable-idl  --disable-idl  --no-cache  --max-file-size bytes\n  --cargo-metadata path        Import saved cargo metadata --format-version 1 JSON\n  --target triple-or-label     Record the target without guessing compiler cfg values\n  --cfg option                 Add an explicit rustc cfg option (repeatable)\n  --cfg-complete               Treat the supplied cfg set as complete; absent options are false\n  --test-profile               Enable cfg(test)\n  --debug-assertions  --no-debug-assertions\n  --fail-on-analysis-error  --no-parse-errors  --no-idl-mismatches\n  --max-function-complexity n  --max-instruction-review-complexity n\n  --minimum-semantic-coverage ratio\n`; }
 
 main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

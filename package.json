@@ -201,6 +201,35 @@
           "type": "string",
           "default": "",
           "description": "Optional workspace-relative path to saved cargo metadata --format-version 1 JSON. Sealevel Insight imports it offline and never runs Cargo automatically."
+        },
+        "sealevelInsight.compilationTarget": {
+          "type": "string",
+          "default": "",
+          "description": "Optional target triple or label recorded with the analysis. Target cfg values are not guessed from this label."
+        },
+        "sealevelInsight.cfgOptions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Explicit rustc cfg options, ideally copied from rustc --print cfg --target <target>."
+        },
+        "sealevelInsight.cfgKnowledge": {
+          "type": "string",
+          "enum": ["partial", "complete"],
+          "default": "partial",
+          "description": "Whether cfgOptions is partial evidence or a complete compiler-emitted set. Only complete mode treats absent options as false."
+        },
+        "sealevelInsight.compilationMode": {
+          "type": "string",
+          "enum": ["normal", "test"],
+          "default": "normal",
+          "description": "Controls cfg(test) evaluation for semantic reachability."
+        },
+        "sealevelInsight.debugAssertions": {
+          "type": "string",
+          "enum": ["unknown", "enabled", "disabled"],
+          "default": "unknown",
+          "description": "Controls cfg(debug_assertions); unknown preserves the branch as unresolved evidence."
         }
       }
     }

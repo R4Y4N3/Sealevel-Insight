@@ -117,6 +117,9 @@ export interface InstructionInfo {
 
 export interface UnresolvedCallDetail { callId: string; expression: string; status: 'ambiguous' | 'unresolved' | 'dynamic'; reason: string; candidates: string[]; location: SourceLocation; }
 export interface CrossPackageReachableSurface { program: string; functions: string[]; cpiIds: string[]; signedCpiIds: string[]; dynamicCpiIds: string[]; pdaIds: string[]; stateTypeIds: string[]; runtimeOperationIds: string[]; externalProgramIds: string[]; unresolvedCallIds: string[]; ambiguousCallIds: string[]; complete: boolean; evidence: Evidence[]; }
+export interface CompilationProfile { target?: string; mode: 'normal' | 'test'; debugAssertions?: boolean; cfgOptions: string[]; cfgKnowledge: 'partial' | 'complete'; evidence: Evidence[]; }
+export type ReachabilityTargetKind = 'function' | 'call' | 'cpi' | 'pda' | 'state-type' | 'runtime-operation' | 'external-program';
+export interface ReachabilityWitness { id: string; targetKind: ReachabilityTargetKind; targetId: string; targetProgram: string; functionPath: string[]; callPath: string[]; location?: SourceLocation; evidence: Evidence[]; }
 
 export interface InstructionReachableSurface {
     directHandler?: string;
@@ -152,6 +155,7 @@ export interface InstructionReachableSurface {
     reviewComplexity?: ReviewComplexity;
     unresolvedCallDetails?: UnresolvedCallDetail[];
     crossPackageSurfaces?: CrossPackageReachableSurface[];
+    witnesses?: ReachabilityWitness[];
 }
 
 export interface AccountInfo {
@@ -420,6 +424,7 @@ export interface InstructionDossier {
   eventIds: string[];
   errorIds: string[];
   crossPackageSurfaces: CrossPackageReachableSurface[];
+  reachabilityWitnesses: ReachabilityWitness[];
   semanticSites: {
     initialization: string[];
     realloc: string[];
@@ -565,6 +570,7 @@ export interface WorkspaceReport {
   schemaVersion: string;
   tool: { name: string; version: string };
   generatedAt: string;
+  compilationProfile?: CompilationProfile;
   workspace?: { name?: string; roots?: string[] };
   programs: ProgramUnit[];
   files: FileMetric[];

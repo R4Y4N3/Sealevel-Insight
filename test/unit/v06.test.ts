@@ -118,6 +118,15 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(changed.length, 1); assert.match(changed[0].id, /crate::a::validate$/);
   });
 
+  it('diffs nested witness paths and compilation profiles deterministically', async () => {
+    const before = await sampleReport('#[program] mod p { pub fn run() { target(); } } fn target() {}');
+    const after = await analyzeSources([{ uri: 'file:///fixture/lib.rs', source: '#[program] mod p { pub fn run() { helper(); } } fn helper() { target(); } fn target() {}', packageName: 'fixture' }], wasm, undefined, undefined, { compilationProfile: { target: 'sbf-solana-solana', mode: 'normal', cfgOptions: ['target_os="solana"'], cfgKnowledge: 'complete', evidence: [{ description: 'profile' }] } });
+    const diff = diffReports(before, after);
+    assert.ok(diff.changes.instructionDossiers.some(item => item.fields?.witnesses)); assert.ok(diff.changes.compilationProfile.some(item => item.fields?.target));
+    const legacy = JSON.parse(JSON.stringify(before)); for (const program of legacy.programs) for (const dossier of program.instructionDossiers ?? []) delete dossier.reachabilityWitnesses;
+    assert.doesNotThrow(() => diffReports(legacy, after));
+  });
+
   it('rejects incompatible report schemas before diffing', async () => {
     const before = await sampleReport('fn a() {}'); const after = { ...before, schemaVersion: '0.7.0' };
     assert.throws(() => diffReports(before, after), /Cannot diff report schema/);
@@ -204,6 +213,17 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const dossier = report.programs.find(item => item.name === 'client')?.instructionDossiers?.[0]!; const cross = dossier.crossPackageSurfaces[0];
     assert.deepEqual(cross.functions, ['helper-lib::first', 'helper-lib::second']); assert.equal(cross.cpiIds.length, 1); assert.equal(cross.complete, true); assert.equal(dossier.reachability.complete, true);
     assert.equal(dossier.reviewComplexity?.components.find(item => item.label === 'CPIs')?.value, 1);
+    const witness = dossier.reachabilityWitnesses.find(item => item.targetKind === 'cpi')!;
+    assert.equal(witness.targetProgram, 'helper-lib'); assert.deepEqual(witness.functionPath.map(item => item.split('::').at(-1)), ['run', 'first', 'second']); assert.equal(witness.callPath.length, 2);
+  });
+
+  it('records deterministic shortest witness paths to functions, semantic sites, and unresolved calls', async () => {
+    const source = 'use solana_program::program::invoke; #[program] mod p { pub fn run() { long(); target(); } } fn long() { middle(); } fn middle() { target(); } fn target() { invoke(&[], &[]); missing(); }';
+    const report = await sampleReport(source); const dossier = report.programs[0].instructionDossiers?.[0]!;
+    const functionWitness = dossier.reachabilityWitnesses.find(item => item.targetKind === 'function' && item.targetId.endsWith('::target'))!;
+    assert.deepEqual(functionWitness.functionPath.map(item => item.split('::').at(-1)), ['run', 'target']); assert.equal(functionWitness.callPath.length, 1);
+    const cpiWitness = dossier.reachabilityWitnesses.find(item => item.targetKind === 'cpi')!; assert.deepEqual(cpiWitness.functionPath, functionWitness.functionPath);
+    const unresolved = dossier.reachabilityWitnesses.find(item => item.targetKind === 'call')!; assert.deepEqual(unresolved.functionPath, functionWitness.functionPath); assert.equal(unresolved.callPath.length, 2);
   });
 
   it('filters known cfg branches and preserves unknown target predicates explicitly', async () => {
@@ -215,6 +235,14 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(program.conditionalCompilation?.featureKnowledge, 'cargo-metadata'); assert.equal(program.conditionalCompilation?.inactiveItems, 2); assert.equal(program.conditionalCompilation?.unknownItems, 1);
     assert.deepEqual(program.functions.find(item => item.name === 'target_specific')?.cfgPredicates, ['target_os = "solana"']);
     const dossier = program.instructionDossiers?.[0]!; assert.equal(dossier.reachability.complete, false); assert.match(dossier.reachability.incompleteReasons.join('\n'), /conditional compilation/); assert.equal(program.securitySurface.cpiSites.length, 0);
+  });
+
+  it('evaluates explicit complete compilation profiles without inferring cfg values from the target label', async () => {
+    const source = '#[cfg(target_os = "solana")] fn solana() {} #[cfg(unix)] fn unix_only() {} #[cfg(test)] fn test_only() {} #[cfg(debug_assertions)] fn debug_only() {} #[cfg(target_arch = "sbf")] fn unknown_arch() {} #[cfg(feature = "manual")] fn manual_feature() {}';
+    const report = await analyzeSources([{ uri: 'file:///fixture/lib.rs', source, packageName: 'fixture' }], wasm, undefined, undefined, { compilationProfile: { target: 'sbf-solana-solana', mode: 'test', debugAssertions: false, cfgOptions: ['target_os="solana"', 'feature="manual"'], cfgKnowledge: 'complete', evidence: [{ description: 'test profile' }] } });
+    assert.deepEqual(report.programs[0].functions.map(item => item.name).sort(), ['manual_feature', 'solana', 'test_only']); assert.equal(report.compilationProfile?.target, 'sbf-solana-solana');
+    const partial = await analyzeSources([{ uri: 'file:///fixture/lib.rs', source: '#[cfg(target_arch = "sbf")] fn maybe() {}', packageName: 'fixture' }], wasm, undefined, undefined, { compilationProfile: { target: 'sbf-solana-solana', mode: 'normal', cfgOptions: [], cfgKnowledge: 'partial', evidence: [{ description: 'target label only' }] } });
+    assert.equal(partial.programs[0].functions[0].cfgStatus, 'unknown');
   });
 
   it('resolves typed inherent and trait method calls without guessing untyped receivers', async () => {

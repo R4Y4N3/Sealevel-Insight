@@ -44,6 +44,15 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
         validateReferences(cross.stateTypeIds, new Set((target.stateTypes ?? []).map(item => item.id)), 'state type', cross.program, dossier.id, add);
         validateReferences(cross.runtimeOperationIds, new Set((target.runtimeOperations ?? []).map(item => item.id)), 'runtime operation', cross.program, dossier.id, add);
       }
+      unique(dossier.reachabilityWitnesses.map(item => item.id), `${program.name}:dossier-witness:${dossier.id}`, add);
+      for (const witness of dossier.reachabilityWitnesses) {
+        const target = programsByName.get(witness.targetProgram);
+        if (!target) { add(`Reachability witness ${witness.id} references missing program ${witness.targetProgram}`, `witness-program:${witness.id}`); continue; }
+        if (!witness.functionPath.length) add(`Reachability witness ${witness.id} has an empty function path`, `witness-path:${witness.id}`);
+        for (const id of witness.callPath) if (!callIds.has(id)) add(`Reachability witness ${witness.id} references missing call ${id}`, `witness-call:${witness.id}:${id}`);
+        const targetIds = witness.targetKind === 'function' ? new Set(target.functions.map(fn => `${target.name}::${(fn.qualifiedName ?? fn.name).replace(/^crate::/, '')}`)) : witness.targetKind === 'call' ? callIds : witness.targetKind === 'cpi' ? new Set(target.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id)) : witness.targetKind === 'pda' ? new Set(target.securitySurface.pdaSites.map(item => item.id).filter((id): id is string => !!id)) : witness.targetKind === 'state-type' ? new Set((target.stateTypes ?? []).map(item => item.id)) : witness.targetKind === 'runtime-operation' ? new Set((target.runtimeOperations ?? []).map(item => item.id)) : new Set((target.externalPrograms ?? []).map(item => item.id));
+        if (!targetIds.has(witness.targetId)) add(`Reachability witness ${witness.id} references missing ${witness.targetKind} ${witness.targetId}`, `witness-target:${witness.id}`);
+      }
     }
     for (const flow of program.stateFlows ?? []) {
       if (!instructionIds.has(flow.instructionId)) add(`State flow ${flow.id} references missing instruction ${flow.instructionId}`, `state-flow-instruction:${program.name}:${flow.id}`);

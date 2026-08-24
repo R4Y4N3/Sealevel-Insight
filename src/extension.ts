@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AnalysisCancelledError, analyzeSources } from './analysis/analyzer';
 import { scanWorkspace } from './discovery/workspaceScanner';
 import { showReport } from './ui/reportPanel';
-import { WorkspaceReport } from './model/report';
+import { CompilationProfile, WorkspaceReport } from './model/report';
 import { InsightExplorer, InsightCodeLens, InsightHover } from './ui/explorer';
 import { discoverIdlsDetailed } from './idl/discovery';
 import { reconcileIdls } from './idl/reconciliation';
@@ -40,13 +40,14 @@ export function activate(context: vscode.ExtensionContext): void {
         const enableIdl = configuration.get<boolean>('enableIdlAnalysis', false); const idlPatterns = configuration.get<string[]>('idlPatterns');
         const discoveries = enableIdl ? await Promise.all(workspaceFolders.map(folder => discoverIdlsDetailed(folder.uri.fsPath, idlPatterns))) : [];
         const fingerprints = await Promise.all(workspaceFolders.map(folder => programIdentityFingerprint(folder.uri.fsPath)));
-        const cacheConfig = { mode, includePatterns: configuration.get('includePatterns'), excludePatterns: configuration.get('excludePatterns'), includeTests: configuration.get('includeTests'), maxFileSize: configuration.get('maxFileSize'), idls: discoveries.flatMap(item => item.programs), fingerprints };
+        const compilationProfile = profileFromConfiguration(configuration);
+        const cacheConfig = { mode, includePatterns: configuration.get('includePatterns'), excludePatterns: configuration.get('excludePatterns'), includeTests: configuration.get('includeTests'), maxFileSize: configuration.get('maxFileSize'), compilationProfile, idls: discoveries.flatMap(item => item.programs), fingerprints };
         const cacheKey = analysisCacheKey(sources, cacheConfig); const cacheDir = vscode.Uri.joinPath(context.globalStorageUri, 'analysis-cache').fsPath;
         let report = await readAnalysisCache(cacheDir, cacheKey);
         if (!report) {
           progress.report({ message: `Parsing and indexing ${sources.length} Rust files` });
           const wasmPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter-rust.wasm').fsPath; const runtimePath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter.wasm').fsPath;
-          report = await analyzeSources(sources, wasmPath, runtimePath, () => token.isCancellationRequested || generation !== analysisGeneration);
+          report = await analyzeSources(sources, wasmPath, runtimePath, () => token.isCancellationRequested || generation !== analysisGeneration, { compilationProfile });
           if (token.isCancellationRequested || generation !== analysisGeneration) return;
           report.workspace = { name: workspaceFolders.map(folder => folder.name).join(', '), roots: workspaceFolders.map(folder => folder.uri.fsPath) };
           const identityDiagnostics = (await Promise.all(workspaceFolders.map(folder => enrichProgramIdentities(folder.uri.fsPath, report!.programs)))).flat(); report.analysisDiagnostics?.push(...identityDiagnostics); report.diagnostics.push(...identityDiagnostics.map(item => item.message));
@@ -90,4 +91,10 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 function publishDiagnostics(report: WorkspaceReport, collection: vscode.DiagnosticCollection): void { collection.clear(); const grouped = new Map<string, vscode.Diagnostic[]>(); for (const item of report.analysisDiagnostics ?? []) { if (!item.location?.uri.startsWith('file:')) continue; const severity = item.severity === 'error' ? vscode.DiagnosticSeverity.Error : item.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information; const diagnostic = new vscode.Diagnostic(new vscode.Range(item.location.startLine - 1, item.location.startColumn, item.location.endLine - 1, item.location.endColumn), item.message, severity); diagnostic.source = 'Sealevel Insight'; diagnostic.code = item.category; grouped.set(item.location.uri, [...(grouped.get(item.location.uri) ?? []), diagnostic]); } for (const [uri, items] of grouped) collection.set(vscode.Uri.parse(uri), items); }
+function profileFromConfiguration(configuration: vscode.WorkspaceConfiguration): CompilationProfile | undefined {
+  const target = configuration.get<string>('compilationTarget', '').trim(); const cfgOptions = configuration.get<string[]>('cfgOptions', []).filter(item => typeof item === 'string' && item.trim()).map(item => item.trim());
+  const cfgKnowledge = configuration.get<'partial' | 'complete'>('cfgKnowledge', 'partial'); const mode = configuration.get<'normal' | 'test'>('compilationMode', 'normal'); const debug = configuration.get<'unknown' | 'enabled' | 'disabled'>('debugAssertions', 'unknown');
+  if (!target && !cfgOptions.length && cfgKnowledge === 'partial' && mode === 'normal' && debug === 'unknown') return undefined;
+  return { target: target || undefined, mode, debugAssertions: debug === 'unknown' ? undefined : debug === 'enabled', cfgOptions: [...new Set(cfgOptions)].sort(), cfgKnowledge, evidence: [{ description: `VS Code compilation profile${target ? ` target ${target}` : ''}; ${cfgKnowledge} cfg option set` }] };
+}
 export function deactivate(): void { }

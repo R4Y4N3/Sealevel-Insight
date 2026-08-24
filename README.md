@@ -22,6 +22,7 @@ CLI use after `npm run build`, or after installing the npm package:
 sealevel-insight analyze . --format json --output report.json
 sealevel-insight analyze programs/vault --format html --output report.html --enable-idl
 sealevel-insight analyze . --cargo-metadata cargo-metadata.json --output report.json
+sealevel-insight analyze . --target sbf-solana-solana --cfg 'target_os="solana"' --cfg-complete --output report.json
 sealevel-insight scope . --scope-file scopefile.txt --format markdown --output scope.md
 sealevel-insight baseline save . --output baseline.json
 sealevel-insight diff baseline.json report.json --output changes.json
@@ -38,6 +39,7 @@ Exit code `0` means success, `1` means analysis/configuration failure, and `2` m
 - Reachability v2 evaluates Cargo feature/`cfg(test)` predicates when saved Cargo metadata provides the active feature set, excludes proven-inactive semantic items, and preserves target/platform predicates as explicit unknown evidence.
 - Typed method calls resolve to a unique inherent or trait implementation only when the receiver type and indexed implementation make the target unambiguous. Trait declarations and untyped/dynamic receivers are never treated as concrete callees.
 - Resolved internal Cargo dependency calls recursively contribute dependency functions, CPIs, PDA signer use, state/runtime operations, external programs, complexity, and unresolved-call evidence to each instruction dossier.
+- Deterministic shortest-path witnesses show the exact function and call-ID chain from an instruction to each reachable function, CPI, PDA, state type, runtime operation, external program, and unresolved terminal call. Cross-package witness edges are included in architecture/call graphs.
 - Per-instruction transitive surfaces: functions, accounts, CPIs, signed/dynamic CPIs, PDAs, external programs, state, sysvars, runtime operations, events, errors, unsafe code, mutations, lifecycle sites, complexity, and incompleteness reasons.
 - Framework-neutral account and state models with evidence, location, confidence, validation, access, lifecycle, serialization, PDA, and instruction relationships.
 - Exact AST-backed CPI/PDA sites, structural PDA seeds, signed CPI links, known external-program classification, and deduplicated reachable relationships.
@@ -116,6 +118,9 @@ VS Code settings:
 | `autoAnalyze` | debounced save/filesystem analysis |
 | `analysisConcurrency` | bounded concurrency (`0` = automatic) |
 | `cargoMetadataPath` | import saved `cargo metadata --format-version 1` JSON without running Cargo |
+| `compilationTarget` | record the intended target triple/label without inferring compiler cfg values |
+| `cfgOptions` / `cfgKnowledge` | provide partial or complete compiler cfg evidence |
+| `compilationMode` / `debugAssertions` | evaluate `cfg(test)` and `cfg(debug_assertions)` explicitly |
 
 CLI quality policies include maximum function complexity, maximum instruction review complexity, no parse errors, no IDL mismatches, and minimum semantic coverage. They are non-security CI gates.
 

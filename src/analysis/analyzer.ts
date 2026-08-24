@@ -1,4 +1,4 @@
-import { AccountInfo, ArchitectureEdge, ArchitectureNode, Evidence, FileMetric, FunctionMetric, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
+import { AccountInfo, ArchitectureEdge, ArchitectureNode, CompilationProfile, Evidence, FileMetric, FunctionMetric, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
 import { parseRust, ParsedRustFile } from '../parser/rustParser';
 import { descendants, field, nodeText, RustNode } from '../parser/rustAst';
 import { sourceComplexity } from './complexity';
@@ -22,17 +22,20 @@ import { enrichMetadataFrameworks } from '../adapters/metadataAdapter';
 import { mapConcurrent } from '../utils/concurrency';
 import { refreshAuditProducts } from './auditProducts';
 import { analyzeConditionalCompilation, CfgFileAnalysis } from './cfg';
+import { attachReachabilityWitnesses } from './reachabilityWitness';
 
 export interface RustSourceInput { uri: string; source: string; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
+export interface AnalysisOptions { compilationProfile?: CompilationProfile; }
 export class AnalysisCancelledError extends Error { constructor() { super('Analysis cancelled.'); this.name = 'AnalysisCancelledError'; } }
 
-export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string, runtimeWasmPath?: string, isCancelled: () => boolean = () => false): Promise<WorkspaceReport> {
+export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string, runtimeWasmPath?: string, isCancelled: () => boolean = () => false, options: AnalysisOptions = {}): Promise<WorkspaceReport> {
+  const compilationProfile = options.compilationProfile ? { ...options.compilationProfile, cfgOptions: [...new Set(options.compilationProfile.cfgOptions.map(item => item.trim()).filter(Boolean))].sort(), evidence: dedupeSemanticEvidence(options.compilationProfile.evidence) } : undefined;
   const originalParsed = await mapConcurrent(inputs, 8, input => { if (isCancelled()) throw new AnalysisCancelledError(); return parseRust(input.uri, input.source, wasmPath, runtimeWasmPath); });
   if (isCancelled()) throw new AnalysisCancelledError();
   const workspaceGraph = inputs.find(input => input.workspaceGraph)?.workspaceGraph;
   const cfgAnalyses = originalParsed.map((file, index) => {
     const input = inputs[index]; const pkg = workspaceGraph?.packages.find(item => item.id === input.packageId || item.name === input.packageName);
-    return file.tree ? analyzeConditionalCompilation(file.tree.rootNode, file.uri, file.source, pkg?.enabledFeatures) : { source: file.source, inactiveItems: 0, unknownItems: 0, unknownPredicates: [], unknownRanges: [] } satisfies CfgFileAnalysis;
+    return file.tree ? analyzeConditionalCompilation(file.tree.rootNode, file.uri, file.source, pkg?.enabledFeatures, compilationProfile) : { source: file.source, inactiveItems: 0, unknownItems: 0, unknownPredicates: [], unknownRanges: [] } satisfies CfgFileAnalysis;
   });
   const parsed = await mapConcurrent(originalParsed, 8, async (file, index) => cfgAnalyses[index].source === file.source ? file : parseRust(file.uri, cfgAnalyses[index].source, wasmPath, runtimeWasmPath));
   const analysisDiagnostics = [
@@ -90,6 +93,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     linkReachableSemantics(program);
   }
   propagateCrossPackageSurfaces(list);
+  attachReachabilityWitnesses(list);
   for (const program of list) {
     program.reviewHotspots = applyReviewComplexity(program);
     program.capabilities = buildCapabilities(program);
@@ -99,6 +103,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   const report: WorkspaceReport = {
     schemaVersion: '0.6.0', tool: { name: 'Sealevel Insight', version: '0.6.0' },
     generatedAt: new Date().toISOString(),
+    compilationProfile,
     programs: list,
     files,
     diagnostics,

@@ -76,6 +76,7 @@ function buildInstructionDossiers(program: ProgramUnit): InstructionDossier[] {
       externalProgramIds: sorted(surface?.externalPrograms ?? []), sysvarIds: sorted(surface?.sysvars ?? []),
       runtimeOperationIds: sorted(surface?.syscalls ?? []), eventIds: sorted(surface?.events ?? []), errorIds: sorted(surface?.errors ?? []),
       crossPackageSurfaces: [...(surface?.crossPackageSurfaces ?? [])].sort((a, b) => a.program.localeCompare(b.program)),
+      reachabilityWitnesses: [...(surface?.witnesses ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
       semanticSites: {
         initialization: sorted(surface?.initializationSites ?? []), realloc: sorted(surface?.reallocSites ?? []), close: sorted(surface?.closeSites ?? []),
         serialization: sorted(surface?.serializationSites ?? []), deserialization: sorted(surface?.deserializationSites ?? []),

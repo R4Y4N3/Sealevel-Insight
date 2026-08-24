@@ -1,4 +1,4 @@
-import { Evidence } from '../model/report';
+import { CompilationProfile, Evidence } from '../model/report';
 import { RustNode } from '../parser/rustAst';
 
 export type CfgStatus = 'active' | 'inactive' | 'unknown';
@@ -11,10 +11,10 @@ export interface CfgFileAnalysis {
   unknownRanges: CfgRange[];
 }
 
-interface CfgContext { features?: Set<string>; test: boolean; }
+interface CfgContext { features?: Set<string>; profile?: CompilationProfile; options: Set<string>; }
 
-export function analyzeConditionalCompilation(root: RustNode, uri: string, source: string, enabledFeatures?: string[]): CfgFileAnalysis {
-  const context: CfgContext = { features: enabledFeatures ? new Set(enabledFeatures) : undefined, test: false };
+export function analyzeConditionalCompilation(root: RustNode, uri: string, source: string, enabledFeatures?: string[], profile?: CompilationProfile): CfgFileAnalysis {
+  const context: CfgContext = { features: enabledFeatures ? new Set(enabledFeatures) : undefined, profile, options: new Set(profile?.cfgOptions.map(normalizeOption) ?? []) };
   const inactive: Array<{ start: number; end: number }> = [];
   const unknownRanges: CfgRange[] = [];
   let inactiveItems = 0;
@@ -61,17 +61,22 @@ function evaluateNestedCfg(value: string, context: CfgContext): Array<{ status: 
   const predicate = value.slice(4, -1).trim(); return [{ status: evaluatePredicate(predicate, context), predicate }];
 }
 
-export function evaluateCfgPredicate(predicate: string, enabledFeatures?: string[]): CfgStatus {
-  return evaluatePredicate(predicate, { features: enabledFeatures ? new Set(enabledFeatures) : undefined, test: false });
+export function evaluateCfgPredicate(predicate: string, enabledFeatures?: string[], profile?: CompilationProfile): CfgStatus {
+  return evaluatePredicate(predicate, { features: enabledFeatures ? new Set(enabledFeatures) : undefined, profile, options: new Set(profile?.cfgOptions.map(normalizeOption) ?? []) });
 }
 
 function evaluatePredicate(value: string, context: CfgContext): CfgStatus {
   const predicate = value.trim();
   if (predicate === 'true') return 'active';
   if (predicate === 'false') return 'inactive';
-  if (predicate === 'test') return context.test ? 'active' : 'inactive';
+  if (predicate === 'test') return context.profile ? context.profile.mode === 'test' ? 'active' : 'inactive' : 'inactive';
+  if (predicate === 'debug_assertions' && context.profile?.debugAssertions !== undefined) return context.profile.debugAssertions ? 'active' : 'inactive';
   const feature = /^feature\s*=\s*(?:"([^"]+)"|r#"([^"]+)"#)$/.exec(predicate);
-  if (feature) return context.features ? context.features.has(feature[1] ?? feature[2]) ? 'active' : 'inactive' : 'unknown';
+  if (feature) {
+    if (context.features) return context.features.has(feature[1] ?? feature[2]) ? 'active' : 'inactive';
+    if (context.options.has(normalizeOption(predicate))) return 'active';
+    return context.profile?.cfgKnowledge === 'complete' ? 'inactive' : 'unknown';
+  }
   const composite = /^(all|any|not)\s*\(([\s\S]*)\)$/.exec(predicate);
   if (composite) {
     const values = splitTopLevel(composite[2]).map(item => evaluatePredicate(item, context));
@@ -79,6 +84,9 @@ function evaluatePredicate(value: string, context: CfgContext): CfgStatus {
     if (composite[1] === 'all') return values.some(item => item === 'inactive') ? 'inactive' : values.every(item => item === 'active') ? 'active' : 'unknown';
     return values.some(item => item === 'active') ? 'active' : values.every(item => item === 'inactive') ? 'inactive' : 'unknown';
   }
+  const normalized = normalizeOption(predicate);
+  if (context.options.has(normalized)) return 'active';
+  if (context.profile?.cfgKnowledge === 'complete' && isConfigurationOption(predicate)) return 'inactive';
   return 'unknown';
 }
 
@@ -89,5 +97,7 @@ function precedingAttributes(node: RustNode): RustNode[] {
 }
 function walk(node: RustNode, visit: (node: RustNode) => void): void { for (const child of node.namedChildren.filter((item): item is RustNode => !!item)) { visit(child); if (child.type !== 'attribute_item') walk(child, visit); } }
 function invert(status: CfgStatus): CfgStatus { return status === 'active' ? 'inactive' : status === 'inactive' ? 'active' : 'unknown'; }
+function normalizeOption(value: string): string { return value.trim().replace(/\s*=\s*/, '='); }
+function isConfigurationOption(value: string): boolean { return /^[A-Za-z_][A-Za-z0-9_]*(?:\s*=\s*(?:"[^"]*"|r#"[^"]*"#))?$/.test(value.trim()); }
 function splitTopLevel(value: string): string[] { const output: string[] = []; let depth = 0; let quoted = false; let start = 0; for (let index = 0; index < value.length; index++) { const char = value[index]; if (char === '"' && value[index - 1] !== '\\') quoted = !quoted; else if (!quoted && char === '(') depth++; else if (!quoted && char === ')') depth--; else if (!quoted && char === ',' && depth === 0) { output.push(value.slice(start, index)); start = index + 1; } } output.push(value.slice(start)); return output.map(item => item.trim()).filter(Boolean); }
 function maskByteRanges(source: string, ranges: Array<{ start: number; end: number }>): string { if (!ranges.length) return source; const bytes = Buffer.from(source); for (const range of ranges) for (let index = Math.max(0, range.start); index < Math.min(bytes.length, range.end); index++) if (bytes[index] !== 10 && bytes[index] !== 13) bytes[index] = 32; return bytes.toString(); }

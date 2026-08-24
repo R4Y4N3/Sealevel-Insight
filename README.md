@@ -21,6 +21,7 @@ CLI use after `npm run build`, or after installing the npm package:
 ```bash
 sealevel-insight analyze . --format json --output report.json
 sealevel-insight analyze programs/vault --format html --output report.html --enable-idl
+sealevel-insight analyze . --cargo-metadata cargo-metadata.json --output report.json
 sealevel-insight scope . --scope-file scopefile.txt --format markdown --output scope.md
 sealevel-insight baseline save . --output baseline.json
 sealevel-insight diff baseline.json report.json --output changes.json
@@ -40,6 +41,12 @@ Exit code `0` means success, `1` means analysis/configuration failure, and `2` m
 - LOC/nSLOC/comments/doc comments/TODO/FIXME/HACK, Rust AST counts, per-function complexity, review hotspots, semantic coverage, scope hashes, exact duplicates, IDL reconciliation, baselines, and diffs.
 
 Review Complexity estimates human audit effort. It is not a vulnerability detector or severity score.
+
+## Audit products
+
+Every analysis produces a deterministic audit manifest plus one instruction dossier for each extracted entrypoint. A dossier joins the instruction's handler and transitive call surface to its accounts and validations, state types, lifecycle/mutation sites, CPI operations and targets, PDA seeds/signing, sysvars, runtime operations, events, errors, review score, and explicit reachability gaps. Account/state-flow records make each instruction-to-account relationship and its observed read/write/init/realloc/close/lamport behavior directly queryable.
+
+The same records are available in JSON, Markdown, the standalone offline HTML audit cockpit, the VS Code report, and the Explorer. Baseline diffs compare dossier shape, account/state flows, and CPI operation classification. The manifest contains no timestamp and makes unresolved calls, dynamic CPIs, incomplete instruction surfaces, and IDL differences explicit; it is an audit-scoping index, not a security verdict.
 
 ## Commands
 
@@ -105,6 +112,7 @@ VS Code settings:
 | `showCodeLens` | confirmed-handler lenses |
 | `autoAnalyze` | debounced save/filesystem analysis |
 | `analysisConcurrency` | bounded concurrency (`0` = automatic) |
+| `cargoMetadataPath` | import saved `cargo metadata --format-version 1` JSON without running Cargo |
 
 CLI quality policies include maximum function complexity, maximum instruction review complexity, no parse errors, no IDL mismatches, and minimum semantic coverage. They are non-security CI gates.
 

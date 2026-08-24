@@ -1,9 +1,10 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { parse } from '@iarna/toml';
 import { AnalysisDiagnostic, ProgramUnit } from '../model/report';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { walkFiles } from './fileWalker';
 
 export async function enrichProgramIdentities(root: string, programs: ProgramUnit[]): Promise<AnalysisDiagnostic[]> {
   const diagnostics: AnalysisDiagnostic[] = [];
@@ -33,15 +34,7 @@ function applyAnchor(raw: Record<string, unknown>, file: string, programs: Progr
   }
 }
 
-async function findConfigs(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && ['.git', 'node_modules', 'target', 'dist', 'dist-test', '.sealevel-insight-cache'].includes(entry.name)) continue;
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await findConfigs(full)); else if (entry.isFile() && /^(?:Anchor|Quasar)\.toml$/i.test(entry.name)) files.push(full);
-  }
-  return files.sort();
-}
+async function findConfigs(directory: string): Promise<string[]> { return walkFiles(directory, { includeFile: (_relative, name) => /^(?:Anchor|Quasar)\.toml$/i.test(name) }); }
 function object(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function normalize(value: string): string { return value.replace(/[-_]/g, '').toLowerCase(); }
 function location(file: string) { return { uri: pathToFileURL(file).href, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 }; }

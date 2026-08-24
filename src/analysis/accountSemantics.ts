@@ -80,11 +80,14 @@ function account(name: string, index: number | undefined, node: RustNode, uri: s
   const signer = signerCheck || cpiFromSigner || accountMetaSigner;
   const writableCheck = new RegExp(`\\b${escaped}\\s*\\.\\s*is_writable(?:\\s*\\(\\s*\\))?`).test(functionText);
   const executable = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:executable|is_executable\\s*\\(\\s*\\))`).test(functionText);
-  const ownerExpectation = new RegExp(`\\b${escaped}\\s*\\.\\s*owner(?:\\s*\\(\\s*\\))?\\s*(?:==|!=)\\s*([^;{}]+)`).exec(functionText)?.[1]?.trim() ?? new RegExp(`\\b${escaped}\\s*\\.\\s*owned_by\\s*\\(\\s*([^)]*(?:\\([^)]*\\)[^)]*)?)\\)`).exec(functionText)?.[1]?.trim();
-  const addressExpectation = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:key|address)(?:\\s*\\(\\s*\\))?\\s*(?:==|!=)\\s*([^;{}]+)`).exec(functionText)?.[1]?.trim();
+  const steelAccount = new RegExp(`\\b${escaped}\\s*\\.\\s*as_account(_mut)?\\s*::\\s*<\\s*([^>]+)>\\s*\\(\\s*([^,)]+)`).exec(functionText);
+  const steelProgram = new RegExp(`\\b${escaped}\\s*\\.\\s*is_program\\s*\\(\\s*([^,)]+)`).exec(functionText);
+  const steelToken = new RegExp(`\\b${escaped}\\s*\\.\\s*as_(mint|token_account)\\s*\\(`).exec(functionText);
+  const ownerExpectation = new RegExp(`\\b${escaped}\\s*\\.\\s*owner(?:\\s*\\(\\s*\\))?\\s*(?:==|!=)\\s*([^;{}]+)`).exec(functionText)?.[1]?.trim() ?? new RegExp(`\\b${escaped}\\s*\\.\\s*owned_by\\s*\\(\\s*([^)]*(?:\\([^)]*\\)[^)]*)?)\\)`).exec(functionText)?.[1]?.trim() ?? steelAccount?.[3]?.trim() ?? (steelToken ? 'spl-token-or-token-2022' : undefined);
+  const addressExpectation = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:key|address)(?:\\s*\\(\\s*\\))?\\s*(?:==|!=)\\s*([^;{}]+)`).exec(functionText)?.[1]?.trim() ?? steelProgram?.[1]?.trim();
   const member = `\\b${escaped}\\s*\\.\\s*`;
-  const dataRead = new RegExp(`${member}(?:try_borrow_data|borrow_state|data\\s*\\.\\s*borrow)`).test(functionText);
-  const dataWrite = new RegExp(`${member}(?:try_borrow_mut(?:_data)?|borrow_mut_state|data\\s*\\.\\s*borrow_mut)`).test(functionText);
+  const dataRead = new RegExp(`${member}(?:try_borrow_data|borrow_state|data\\s*\\.\\s*borrow|as_account(?:\\s*::|\\s*<)|as_mint|as_token_account)`).test(functionText);
+  const dataWrite = new RegExp(`${member}(?:try_borrow_mut(?:_data)?|borrow_mut_state|data\\s*\\.\\s*borrow_mut|as_account_mut)`).test(functionText) || steelAccount?.[1] === '_mut';
   const lamportRead = new RegExp(`${member}(?:lamports\\s*\\(|try_borrow_lamports)`).test(functionText);
   const lamportWrite = new RegExp(`${member}(?:try_borrow_mut_lamports|set_lamports)`).test(functionText);
   const realloc = new RegExp(`${member}(?:realloc|resize|UnsafeResize)`).test(functionText);
@@ -93,12 +96,12 @@ function account(name: string, index: number | undefined, node: RustNode, uri: s
   const writable = writableCheck || dataWrite || lamportWrite || realloc || close || cpiWritable;
   const location = loc(uri, node);
   return {
-    id: `account:${uri}:${functionName}:${name}:${location.startLine}`, name, type: /AccountView/.test(functionText) ? 'AccountView' : 'AccountInfo', wrapperType: /AccountView/.test(functionText) ? 'AccountView' : 'AccountInfo',
-    ordinal: index, index, signer, writable, executable, raw: true, ownerExpectation, addressExpectation, ownerValidated: !!ownerExpectation, addressValidated: !!addressExpectation,
+    id: `account:${uri}:${functionName}:${name}:${location.startLine}`, name, type: /AccountView/.test(functionText) ? 'AccountView' : 'AccountInfo', wrapperType: /AccountView/.test(functionText) ? 'AccountView' : 'AccountInfo', stateType: steelAccount?.[2]?.trim() ?? (steelToken?.[1] === 'mint' ? 'Mint' : steelToken ? 'TokenAccount' : undefined),
+    ordinal: index, index, signer, writable, executable: executable || !!steelProgram, raw: true, ownerExpectation, addressExpectation, ownerValidated: !!ownerExpectation, addressValidated: !!addressExpectation,
     dataAccess: [...(dataRead ? ['read' as const] : []), ...(dataWrite ? ['write' as const] : [])], lamportAccess: [...(lamportRead ? ['read' as const] : []), ...(lamportWrite ? ['write' as const] : [])],
     lifecycle: [...(dataWrite || writable ? ['write' as const] : ['read' as const]), ...(realloc ? ['realloc' as const] : []), ...(close ? ['close' as const] : []), ...(lamportWrite ? ['lamport-transfer' as const] : [])],
     serialization: [/borsh|try_from_slice|deserialize/i.test(functionText) ? 'borsh' : '', /Pack::unpack|unpack_from_slice/.test(functionText) ? 'pack' : '', /bytemuck|Pod|try_from_bytes/.test(functionText) ? 'zero-copy' : ''].filter(Boolean),
-    location, confidence: 0.88, evidence: [{ description, location }, ...(signerCheck ? [{ description: `actual signer validation for ${name}`, location }] : []), ...(!signerCheck && signer ? [{ description: `CPI signer requirement for ${name}`, location }] : []), ...(writableCheck ? [{ description: `actual writable validation for ${name}`, location }] : []), ...(!writableCheck && writable ? [{ description: `evidence-backed writable access for ${name}`, location }] : []), ...(ownerExpectation ? [{ description: `owner validation against ${ownerExpectation}`, location }] : []), ...(addressExpectation ? [{ description: `address validation against ${addressExpectation}`, location }] : [])]
+    location, confidence: 0.88, evidence: [{ description, location }, ...(signerCheck ? [{ description: `actual signer validation for ${name}`, location }] : []), ...(!signerCheck && signer ? [{ description: `CPI signer requirement for ${name}`, location }] : []), ...(writableCheck ? [{ description: `actual writable validation for ${name}`, location }] : []), ...(!writableCheck && writable ? [{ description: `evidence-backed writable access for ${name}`, location }] : []), ...(steelAccount ? [{ description: `Steel typed account validation as ${steelAccount[2].trim()}`, location }] : []), ...(steelToken ? [{ description: `Steel ${steelToken[1]} validation`, location }] : []), ...(ownerExpectation ? [{ description: `owner validation against ${ownerExpectation}`, location }] : []), ...(addressExpectation ? [{ description: `address validation against ${addressExpectation}`, location }] : [])]
   };
 }
 

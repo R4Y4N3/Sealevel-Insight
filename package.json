@@ -144,7 +144,11 @@
             "**/target/**",
             "**/node_modules/**",
             "**/.anchor/**",
+            "**/.real-world-cache/**",
+            "**/.sealevel-insight-cache/**",
+            "**/.vscode-test/**",
             "**/dist/**",
+            "**/dist-integration/**",
             "**/dist-test/**"
           ],
           "description": "Glob patterns excluded from workspace analysis."
@@ -192,6 +196,11 @@
           "minimum": 0,
           "default": 0,
           "description": "Maximum concurrent file reads/parses. Zero selects a bounded automatic value."
+        },
+        "sealevelInsight.cargoMetadataPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional workspace-relative path to saved cargo metadata --format-version 1 JSON. Sealevel Insight imports it offline and never runs Cargo automatically."
         }
       }
     }

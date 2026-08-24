@@ -18,10 +18,11 @@
     "files": { "type": "array", "items": { "$ref": "#/$defs/file" } },
     "diagnostics": { "type": "array", "items": { "type": "string" } },
     "analysisDiagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
-    "coverage": { "type": "object" },
-    "reviewProfile": { "type": "array" },
-    "workspaceGraph": { "type": "object" },
-    "idl": { "type": "object" },
+    "coverage": { "type": "object", "additionalProperties": { "anyOf": [{ "$ref": "#/$defs/coverageRatio" }, { "type": "integer", "minimum": 0 }, { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }] } },
+    "reviewProfile": { "type": "array", "items": { "$ref": "#/$defs/reviewHotspot" } },
+    "workspaceGraph": { "type": "object", "required": ["workspaces", "packages", "dependencyEdges", "diagnostics"], "properties": { "workspaces": { "type": "array", "items": { "type": "object" } }, "packages": { "type": "array", "items": { "type": "object", "required": ["id", "name", "manifestUri", "rootUri", "kind", "confidence", "evidence", "dependencies", "targets", "features"], "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "manifestUri": { "type": "string" }, "rootUri": { "type": "string" }, "kind": { "type": "string" }, "confidence": { "$ref": "#/$defs/confidence" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "dependencies": { "type": "array" }, "targets": { "type": "array" }, "features": { "type": "array" }, "metadataId": { "type": "string" }, "enabledFeatures": { "$ref": "#/$defs/stringArray" } } } }, "dependencyEdges": { "type": "array", "items": { "type": "object", "required": ["source", "target", "kind"], "properties": { "source": { "type": "string" }, "target": { "type": "string" }, "kind": { "enum": ["internal", "external"] } } } }, "resolution": { "type": "object", "required": ["sourceUri", "formatVersion", "workspaceMembers", "workspaceDefaultMembers", "nodes", "dependencyEdges"], "properties": { "sourceUri": { "type": "string" }, "formatVersion": { "const": 1 }, "workspaceMembers": { "$ref": "#/$defs/stringArray" }, "workspaceDefaultMembers": { "$ref": "#/$defs/stringArray" }, "nodes": { "type": "array", "items": { "type": "object", "required": ["packageId", "name", "version", "features", "dependencies"], "properties": { "packageId": { "type": "string" }, "name": { "type": "string" }, "version": { "type": "string" }, "features": { "$ref": "#/$defs/stringArray" }, "dependencies": { "type": "array" } } } }, "dependencyEdges": { "type": "array" } } }, "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } } } },
+    "idl": { "type": "object", "required": ["programs", "reconciliations", "diagnostics"], "properties": { "programs": { "type": "array", "items": { "type": "object", "required": ["instructions"], "properties": { "instructions": { "type": "array", "items": { "type": "object" } } } } }, "reconciliations": { "type": "array", "items": { "type": "object", "required": ["status", "item"], "properties": { "status": { "enum": ["MATCHED", "SOURCE_ONLY", "IDL_ONLY", "MISMATCH", "UNKNOWN"] }, "item": { "type": "string" }, "details": { "type": "string" } } } }, "diagnostics": { "type": "array", "items": { "type": "string" } } } },
+    "auditManifest": { "$ref": "#/$defs/auditManifest" },
     "summary": { "$ref": "#/$defs/summary" }
   },
   "$defs": {
@@ -34,6 +35,11 @@
         "endColumn": { "type": "integer", "minimum": 0 }
       }
     },
+    "evidence": {
+      "type": "object", "required": ["description"],
+      "properties": { "description": { "type": "string" }, "location": { "$ref": "#/$defs/location" } }
+    },
+    "evidenceArray": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
     "file": {
       "type": "object",
       "required": ["uri", "lines", "codeLines", "commentLines", "blankLines", "functions", "structs", "enums", "traits", "implBlocks", "unsafeBlocks", "macroInvocations"],
@@ -51,13 +57,92 @@
       "required": ["name", "rustFiles", "functions", "instructions", "accounts", "frameworkEvidence", "securitySurface"],
       "properties": {
         "name": { "type": "string", "minLength": 1 }, "rustFiles": { "type": "array", "items": { "$ref": "#/$defs/file" } },
-        "functions": { "type": "array" }, "instructions": { "type": "array" }, "accounts": { "type": "array" },
-        "frameworkEvidence": { "type": "array" },
+        "functions": { "type": "array", "items": { "$ref": "#/$defs/function" } }, "instructions": { "type": "array", "items": { "$ref": "#/$defs/instruction" } }, "accounts": { "type": "array", "items": { "$ref": "#/$defs/account" } },
+        "frameworkEvidence": { "type": "array", "items": { "$ref": "#/$defs/frameworkEvidence" } },
+        "instructionDossiers": { "type": "array", "items": { "$ref": "#/$defs/instructionDossier" } },
+        "stateFlows": { "type": "array", "items": { "$ref": "#/$defs/stateFlow" } },
         "securitySurface": {
-          "type": "object", "required": ["cpiSites", "pdaSites"],
-          "properties": { "cpiSites": { "type": "array" }, "pdaSites": { "type": "array" } }
+          "type": "object", "required": ["signerSignals", "writableSignals", "ownerValidationSignals", "addressValidationSignals", "remainingAccounts", "rawOrUncheckedAccounts", "manualAccountIteration", "unsafeBlocks", "manualSignerChecks", "manualOwnerChecks", "manualWritableChecks", "manualAddressChecks", "manualSerialization", "reallocOperations", "unsafeFunctions", "cpiSites", "pdaSites"],
+          "properties": {
+            "signerSignals": { "$ref": "#/$defs/count" }, "writableSignals": { "$ref": "#/$defs/count" }, "ownerValidationSignals": { "$ref": "#/$defs/count" }, "addressValidationSignals": { "$ref": "#/$defs/count" }, "remainingAccounts": { "$ref": "#/$defs/count" }, "rawOrUncheckedAccounts": { "$ref": "#/$defs/count" }, "manualAccountIteration": { "$ref": "#/$defs/count" }, "unsafeBlocks": { "$ref": "#/$defs/count" }, "manualSignerChecks": { "$ref": "#/$defs/count" }, "manualOwnerChecks": { "$ref": "#/$defs/count" }, "manualWritableChecks": { "$ref": "#/$defs/count" }, "manualAddressChecks": { "$ref": "#/$defs/count" }, "manualSerialization": { "$ref": "#/$defs/count" }, "reallocOperations": { "$ref": "#/$defs/count" }, "unsafeFunctions": { "$ref": "#/$defs/count" },
+            "cpiSites": { "type": "array", "items": { "$ref": "#/$defs/cpi" } }, "pdaSites": { "type": "array", "items": { "$ref": "#/$defs/pda" } }
+          }
         }
       }
+    },
+    "count": { "type": "integer", "minimum": 0 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "stringArray": { "type": "array", "items": { "type": "string" } },
+    "function": {
+      "type": "object", "required": ["name", "location", "lines", "complexity", "parameters", "isPublic", "isUnsafe"],
+      "properties": { "name": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "lines": { "$ref": "#/$defs/count" }, "complexity": { "type": "number", "minimum": 0 }, "parameters": { "$ref": "#/$defs/count" }, "isPublic": { "type": "boolean" }, "isUnsafe": { "type": "boolean" } }
+    },
+    "instruction": {
+      "type": "object", "required": ["name", "location", "confidence", "evidence"],
+      "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "confidence": { "$ref": "#/$defs/confidence" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "reachableSurface": { "$ref": "#/$defs/reachableSurface" } }
+    },
+    "reachableSurface": {
+      "type": "object", "required": ["functions", "accounts", "cpis", "pdas", "externalPrograms"],
+      "properties": { "functions": { "$ref": "#/$defs/stringArray" }, "accounts": { "$ref": "#/$defs/stringArray" }, "cpis": { "$ref": "#/$defs/stringArray" }, "pdas": { "$ref": "#/$defs/stringArray" }, "externalPrograms": { "$ref": "#/$defs/stringArray" }, "complete": { "type": "boolean" }, "reviewComplexity": { "$ref": "#/$defs/reviewComplexity" } }
+    },
+    "account": {
+      "type": "object", "required": ["type", "location", "evidence", "confidence"],
+      "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" }, "signer": { "type": "boolean" }, "writable": { "type": "boolean" }, "unchecked": { "type": "boolean" }, "executable": { "type": "boolean" }, "raw": { "type": "boolean" }, "optional": { "type": "boolean" }, "constraints": { "type": "array", "items": { "$ref": "#/$defs/constraint" } }, "relations": { "type": "array", "items": { "$ref": "#/$defs/accountRelation" } } }
+    },
+    "constraint": { "type": "object", "required": ["kind", "location"], "properties": { "kind": { "type": "string" }, "expression": { "type": "string" }, "location": { "$ref": "#/$defs/location" } } },
+    "accountRelation": { "type": "object", "required": ["kind", "target", "constraint", "location"], "properties": { "kind": { "enum": ["has-one", "payer", "close-destination", "realloc-payer", "seed-program", "token-mint", "token-authority", "token-program", "mint-authority", "mint-freeze-authority", "associated-token-mint", "associated-token-authority", "associated-token-program", "extension-authority", "extension-program", "extension-address"] }, "target": { "type": "string" }, "constraint": { "type": "string" }, "location": { "$ref": "#/$defs/location" } } },
+    "cpi": { "type": "object", "required": ["location", "pdaSigned", "evidence", "confidence"], "properties": { "id": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "pdaSigned": { "type": "boolean" }, "operation": { "type": "string" }, "operationCategory": { "enum": ["account-creation", "allocation", "ownership-change", "lamport-transfer", "token-transfer", "token-mint", "token-burn", "account-close", "authority-change", "freeze", "thaw", "token-account-create", "token-account-recovery", "initialization", "nonce", "other"] }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" } } },
+    "pda": { "type": "object", "required": ["location", "evidence", "confidence"], "properties": { "id": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" } } },
+    "frameworkEvidence": { "type": "object", "required": ["framework", "confidence", "evidence"], "properties": { "framework": { "type": "string" }, "confidence": { "$ref": "#/$defs/confidence" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "location": { "$ref": "#/$defs/location" } } },
+    "coverageRatio": { "type": "object", "required": ["resolved", "total", "percent"], "properties": { "resolved": { "$ref": "#/$defs/count" }, "total": { "$ref": "#/$defs/count" }, "percent": { "type": "number", "minimum": 0, "maximum": 100 } } },
+    "reviewComplexity": { "type": "object", "required": ["score", "level", "components"], "properties": { "score": { "type": "number", "minimum": 0 }, "level": { "enum": ["Low Review Surface", "Moderate Review Surface", "Elevated Review Surface", "Heavy Review Surface"] }, "components": { "type": "array", "items": { "type": "object", "required": ["label", "value", "weight", "contribution"], "properties": { "label": { "type": "string" }, "value": { "type": "number", "minimum": 0 }, "weight": { "type": "number", "minimum": 0 }, "contribution": { "type": "number", "minimum": 0 } } } } } },
+    "reviewHotspot": { "type": "object", "required": ["id", "label", "score", "reasons"], "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "score": { "type": "number", "minimum": 0 }, "reasons": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" } } },
+    "validation": { "type": "object", "required": ["validated"], "properties": { "validated": { "type": "boolean" }, "expected": { "type": "string" } }, "additionalProperties": false },
+    "instructionAccountDossier": {
+      "type": "object",
+      "required": ["accountId", "name", "type", "relationship", "direct", "signer", "writable", "executable", "unchecked", "optional", "ownerValidation", "addressValidation", "lifecycle", "dataAccess", "lamportAccess", "serialization", "constraints", "relations", "location", "evidence"],
+      "properties": {
+        "accountId": { "type": "string" }, "name": { "type": "string" }, "type": { "type": "string" }, "stateTypeId": { "type": "string" }, "stateType": { "type": "string" },
+        "relationship": { "enum": ["reads", "writes", "signer", "unchecked", "unknown"] }, "direct": { "type": "boolean" }, "signer": { "type": "boolean" }, "writable": { "type": "boolean" }, "executable": { "type": "boolean" }, "unchecked": { "type": "boolean" }, "optional": { "type": "boolean" },
+        "ownerValidation": { "$ref": "#/$defs/validation" }, "addressValidation": { "$ref": "#/$defs/validation" }, "pdaId": { "type": "string" },
+        "lifecycle": { "type": "array", "items": { "enum": ["read", "write", "init", "create", "realloc", "close", "lamport-transfer", "unknown"] } }, "dataAccess": { "type": "array", "items": { "enum": ["read", "write"] } }, "lamportAccess": { "type": "array", "items": { "enum": ["read", "write"] } },
+        "serialization": { "$ref": "#/$defs/stringArray" }, "constraints": { "$ref": "#/$defs/stringArray" }, "relations": { "type": "array", "items": { "$ref": "#/$defs/accountRelation" } }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" }
+      }, "additionalProperties": false
+    },
+    "instructionCpiDossier": {
+      "type": "object", "required": ["cpiId", "direct", "accountArguments", "pdaSigned", "signerPdaIds", "location", "evidence"],
+      "properties": { "cpiId": { "type": "string" }, "direct": { "type": "boolean" }, "target": { "type": "string" }, "targetKind": { "type": "string" }, "operation": { "type": "string" }, "operationCategory": { "type": "string" }, "functionName": { "type": "string" }, "invocationApi": { "type": "string" }, "programAccountExpression": { "type": "string" }, "accountArguments": { "$ref": "#/$defs/stringArray" }, "pdaSigned": { "type": "boolean" }, "signerPdaIds": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" } }, "additionalProperties": false
+    },
+    "instructionPdaDossier": {
+      "type": "object", "required": ["pdaId", "direct", "seeds", "usedAsSigner", "relatedCpiIds", "location", "evidence"],
+      "properties": { "pdaId": { "type": "string" }, "direct": { "type": "boolean" }, "seeds": { "$ref": "#/$defs/stringArray" }, "bump": { "type": "string" }, "programIdExpression": { "type": "string" }, "usedAsSigner": { "type": "boolean" }, "relatedAccountId": { "type": "string" }, "relatedCpiIds": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" } }, "additionalProperties": false
+    },
+    "instructionDossier": {
+      "type": "object", "required": ["id", "program", "instructionId", "name", "arguments", "location", "reachability", "accounts", "cpis", "pdas", "stateTypeIds", "externalProgramIds", "sysvarIds", "runtimeOperationIds", "eventIds", "errorIds", "semanticSites", "evidence"],
+      "properties": {
+        "id": { "type": "string" }, "program": { "type": "string" }, "instructionId": { "type": "string" }, "name": { "type": "string" }, "handler": { "type": "string" }, "contextType": { "type": "string" }, "discriminator": { "type": "string" }, "arguments": { "type": "array", "items": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "type": { "type": "string" } }, "additionalProperties": false } }, "location": { "$ref": "#/$defs/location" },
+        "reachability": { "type": "object", "required": ["complete", "incompleteReasons", "functions", "unresolvedCalls", "ambiguousCalls"], "properties": { "complete": { "type": "boolean" }, "incompleteReasons": { "$ref": "#/$defs/stringArray" }, "functions": { "$ref": "#/$defs/stringArray" }, "unresolvedCalls": { "$ref": "#/$defs/stringArray" }, "ambiguousCalls": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false },
+        "accounts": { "type": "array", "items": { "$ref": "#/$defs/instructionAccountDossier" } }, "cpis": { "type": "array", "items": { "$ref": "#/$defs/instructionCpiDossier" } }, "pdas": { "type": "array", "items": { "$ref": "#/$defs/instructionPdaDossier" } },
+        "stateTypeIds": { "$ref": "#/$defs/stringArray" }, "externalProgramIds": { "$ref": "#/$defs/stringArray" }, "sysvarIds": { "$ref": "#/$defs/stringArray" }, "runtimeOperationIds": { "$ref": "#/$defs/stringArray" }, "eventIds": { "$ref": "#/$defs/stringArray" }, "errorIds": { "$ref": "#/$defs/stringArray" },
+        "semanticSites": { "type": "object", "required": ["initialization", "realloc", "close", "serialization", "deserialization", "lamportMutation", "dataMutation"], "properties": { "initialization": { "$ref": "#/$defs/stringArray" }, "realloc": { "$ref": "#/$defs/stringArray" }, "close": { "$ref": "#/$defs/stringArray" }, "serialization": { "$ref": "#/$defs/stringArray" }, "deserialization": { "$ref": "#/$defs/stringArray" }, "lamportMutation": { "$ref": "#/$defs/stringArray" }, "dataMutation": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false },
+        "reviewComplexity": { "$ref": "#/$defs/reviewComplexity" }, "evidence": { "$ref": "#/$defs/evidenceArray" }
+      }, "additionalProperties": false
+    },
+    "stateFlow": {
+      "type": "object", "required": ["id", "instructionId", "accountId", "direct", "relationship", "operations", "dataAccess", "lamportAccess", "serialization", "location", "evidence"],
+      "properties": { "id": { "type": "string" }, "instructionId": { "type": "string" }, "accountId": { "type": "string" }, "stateTypeId": { "type": "string" }, "stateType": { "type": "string" }, "direct": { "type": "boolean" }, "relationship": { "enum": ["reads", "writes", "signer", "unchecked", "unknown"] }, "operations": { "type": "array", "items": { "enum": ["read", "write", "init", "create", "realloc", "close", "lamport-transfer", "unknown"] } }, "dataAccess": { "type": "array", "items": { "enum": ["read", "write"] } }, "lamportAccess": { "type": "array", "items": { "enum": ["read", "write"] } }, "serialization": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" } }, "additionalProperties": false
+    },
+    "auditManifest": {
+      "type": "object", "required": ["formatVersion", "analysisMode", "scope", "programs", "reviewQueue", "externalPrograms", "unresolved", "evidence"],
+      "properties": {
+        "formatVersion": { "const": 1 }, "analysisMode": { "const": "local-offline-deterministic" },
+        "scope": { "type": "object", "required": ["programs", "packages", "sourceFiles", "instructions", "dossiers", "stateFlows"], "properties": { "programs": { "$ref": "#/$defs/count" }, "packages": { "$ref": "#/$defs/count" }, "sourceFiles": { "$ref": "#/$defs/count" }, "instructions": { "$ref": "#/$defs/count" }, "dossiers": { "$ref": "#/$defs/count" }, "stateFlows": { "$ref": "#/$defs/count" } }, "additionalProperties": false },
+        "programs": { "type": "array", "items": { "type": "object", "required": ["program", "frameworks", "sourceFiles", "instructionDossierIds", "stateFlowIds", "externalProgramIds", "dependencyCount", "reviewScore", "coverageComplete"], "properties": { "program": { "type": "string" }, "packageId": { "type": "string" }, "packageKind": { "type": "string" }, "programId": { "type": "string" }, "frameworks": { "$ref": "#/$defs/stringArray" }, "sourceFiles": { "$ref": "#/$defs/stringArray" }, "instructionDossierIds": { "$ref": "#/$defs/stringArray" }, "stateFlowIds": { "$ref": "#/$defs/stringArray" }, "externalProgramIds": { "$ref": "#/$defs/stringArray" }, "dependencyCount": { "$ref": "#/$defs/count" }, "reviewScore": { "type": "number", "minimum": 0 }, "coverageComplete": { "type": "boolean" } }, "additionalProperties": false } },
+        "reviewQueue": { "type": "array", "items": { "type": "object", "required": ["dossierId", "program", "instruction", "score", "complete", "reasons", "location"], "properties": { "dossierId": { "type": "string" }, "program": { "type": "string" }, "instruction": { "type": "string" }, "score": { "type": "number", "minimum": 0 }, "complete": { "type": "boolean" }, "reasons": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" } }, "additionalProperties": false } },
+        "externalPrograms": { "type": "array", "items": { "type": "object", "required": ["id", "program", "name", "kind", "cpiCount", "signedCpiCount", "calledByInstructions"], "properties": { "id": { "type": "string" }, "program": { "type": "string" }, "name": { "type": "string" }, "kind": { "type": "string" }, "programId": { "type": "string" }, "cpiCount": { "$ref": "#/$defs/count" }, "signedCpiCount": { "$ref": "#/$defs/count" }, "calledByInstructions": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false } },
+        "unresolved": { "type": "object", "required": ["incompleteInstructionDossierIds", "unknownOrDynamicCallIds", "ambiguousCallIds", "dynamicCpiIds", "idlMismatchItems"], "properties": { "incompleteInstructionDossierIds": { "$ref": "#/$defs/stringArray" }, "unknownOrDynamicCallIds": { "$ref": "#/$defs/stringArray" }, "ambiguousCallIds": { "$ref": "#/$defs/stringArray" }, "dynamicCpiIds": { "$ref": "#/$defs/stringArray" }, "idlMismatchItems": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false },
+        "evidence": { "$ref": "#/$defs/evidenceArray" }
+      }, "additionalProperties": false
     },
     "diagnostic": {
       "type": "object",

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { walkFiles } from '../discovery/fileWalker';
 
 export interface ScopeConfig { include?: string[]; exclude?: string[]; includeTests?: boolean; includeGenerated?: boolean; includeDuplicates?: boolean; scopeFile?: string; }
 export interface ScopeFile { path: string; sha256: string; inScope: boolean; duplicateOf?: string; generated: boolean; test: boolean; }
@@ -14,7 +15,8 @@ export async function buildScope(root: string, config?: ScopeConfig): Promise<Sc
     try { mergeScopeFile(config, await readScopeFile(scopePath, loaded.diagnostics)); loaded.source = scopePath; }
     catch (error) { loaded.diagnostics.push(`Invalid scope file ${config.scopeFile}: ${error instanceof Error ? error.message : String(error)}`); }
   }
-  const files = (await walk(root)).sort();
+  const directoryExcludes = (config.exclude ?? ['**/target/**', '**/node_modules/**', '**/.git/**']).map(globRegex);
+  const files = await walkFiles(root, { shouldDescend: relative => !directoryExcludes.some(pattern => pattern.test(`${relative}/__sealevel_insight__`)) });
   const result: ScopeFile[] = [];
   for (const file of files) {
     const relative = path.relative(root, file).split(path.sep).join('/');
@@ -69,18 +71,6 @@ async function readScopeFile(file: string, diagnostics: string[]): Promise<Scope
 function mergeScopeFile(target: ScopeConfig, source: ScopeConfig): void { target.include = [...(target.include ?? []), ...(source.include ?? [])]; target.exclude = [...(target.exclude ?? []), ...(source.exclude ?? [])]; }
 function stringArray(value: unknown): string[] | undefined { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item) : undefined; }
 function boolean(value: unknown): boolean | undefined { return typeof value === 'boolean' ? value : undefined; }
-
-async function walk(directory: string): Promise<string[]> {
-  const { readdir } = await import('node:fs/promises');
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (['.git', 'target', 'node_modules', 'dist', 'dist-test'].includes(entry.name)) continue;
-    const full = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await walk(full)); else if (entry.isFile()) files.push(full);
-  }
-  return files;
-}
 
 function matches(value: string, patterns: string[]): boolean {
   return patterns.some(pattern => globRegex(pattern).test(value));

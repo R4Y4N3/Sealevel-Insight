@@ -5,10 +5,11 @@ import { classifyPackage } from './cargoDiscovery';
 import { buildCargoGraph } from './cargoGraph';
 import { mapConcurrent } from '../utils/concurrency';
 import { AnalysisDiagnostic } from '../model/report';
+import { applyCargoMetadata } from './cargoMetadata';
 
 export async function scanWorkspace(): Promise<RustSourceInput[]> {
   const includes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('includePatterns', ['**/*.rs']);
-  const excludes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('excludePatterns', ['**/.git/**', '**/target/**', '**/node_modules/**', '**/.anchor/**', '**/dist/**', '**/dist-test/**']);
+  const excludes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('excludePatterns', ['**/.git/**', '**/target/**', '**/node_modules/**', '**/.anchor/**', '**/.real-world-cache/**', '**/.sealevel-insight-cache/**', '**/.vscode-test/**', '**/dist/**', '**/dist-integration/**', '**/dist-test/**']);
   const configuredIncludes = Array.isArray(includes) ? includes.filter(pattern => typeof pattern === 'string' && pattern.length > 0) : ['**/*.rs'];
   const validIncludes = [...new Set(configuredIncludes.flatMap(pattern => pattern.startsWith('**/') ? [pattern, pattern.slice(3)] : [pattern]))];
   const validExcludes = Array.isArray(excludes) ? excludes.filter(pattern => typeof pattern === 'string' && pattern.length > 0) : [];
@@ -38,6 +39,13 @@ export async function scanWorkspace(): Promise<RustSourceInput[]> {
   });
   const allSourcePaths = uris.map(uri => uri.fsPath);
   const graph = buildCargoGraph([...packages.values()].map(item => ({ uri: item.uri.fsPath, text: item.manifest, fileUris: allSourcePaths.filter(file => file === path.join(path.dirname(item.uri.fsPath), 'build.rs') || file.startsWith(`${path.dirname(item.uri.fsPath)}${path.sep}`)) })), sourceByDirectory);
+  const metadataSetting = vscode.workspace.getConfiguration('sealevelInsight').get<string>('cargoMetadataPath', '').trim();
+  if (metadataSetting) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const metadataPath = path.isAbsolute(metadataSetting) ? metadataSetting : path.resolve(workspaceRoot, metadataSetting);
+    try { applyCargoMetadata(graph, JSON.parse(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(metadataPath))).toString('utf8')), metadataPath); }
+    catch (error) { graph.diagnostics.push({ id: `diagnostic:cargo:metadata:${metadataPath}`, category: 'cargo', severity: 'error', message: `Could not load saved Cargo metadata ${metadataPath}: ${error instanceof Error ? error.message : String(error)}`, location: { uri: metadataPath, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); }
+  }
   graph.diagnostics.push(...scanDiagnostics.sort((a, b) => (a.location?.uri ?? '').localeCompare(b.location?.uri ?? '')));
   const discovered = results.filter((item): item is Exclude<typeof item, undefined> => item !== undefined);
   return discovered.map(item => { const pkg = graph.packages.find(pkg => pkg.manifestUri === item.manifestUri || pkg.name === item.packageName); return { ...item, packageId: pkg?.id, packageRoot: pkg?.rootUri, workspaceGraph: graph }; });

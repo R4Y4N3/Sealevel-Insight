@@ -35,8 +35,10 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
       const type = nodeText(field(fieldNode, 'type'));
       const fieldAttributes = attributesFor(fieldNode);
       const constraints = parseConstraints(fieldAttributes, uri, fieldNode);
-      const wrapperType = /^([A-Za-z_][A-Za-z0-9_:]*)/.exec(type)?.[1]?.split('::').at(-1);
-      const stateType = /^(?:Account|AccountLoader|InterfaceAccount)\s*</.test(type) ? /<\s*([^>,]+)/.exec(type)?.[1]?.trim() : undefined;
+      const optional = /^\s*Option\s*</.test(type);
+      const normalizedType = optional ? type.replace(/^\s*Option\s*<\s*/, '').replace(/>\s*$/, '') : type;
+      const wrapperType = /^([A-Za-z_][A-Za-z0-9_:]*)/.exec(normalizedType)?.[1]?.split('::').at(-1);
+      const stateType = /^(?:Account|AccountLoader|InterfaceAccount|Program|Interface|Sysvar)\s*</.test(normalizedType) ? /<\s*([^>,]+)/.exec(normalizedType)?.[1]?.trim() : undefined;
       const address = constraints.find(item => item.kind === 'address')?.expression;
       const seedDefinition = stateType ? seedDefinitions.get(stateType) : undefined;
       if (address && seedDefinition) {
@@ -45,10 +47,14 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
         const seeds = [...seedDefinition.constants, ...seedDefinition.parameters.map((_, index) => argumentsList[index]).filter((item): item is string => !!item)];
         if (seeds.length) constraints.push({ kind: 'seeds', expression: `[${seeds.join(', ')}]`, location: loc(uri, fieldNode) });
       }
-      const writable = constraints.some(item => item.kind === 'mut' || item.kind === 'init' || item.kind === 'realloc');
-      const lifecycle: NonNullable<AccountInfo['lifecycle']> = constraints.some(item => item.kind === 'init') ? ['init', 'create', 'write'] : writable ? ['write'] : ['read'];
+      const initializing = constraints.some(item => item.kind === 'init' || item.kind === 'init(idempotent)');
+      const closing = constraints.some(item => item.kind === 'close');
+      const writable = constraints.some(item => item.kind === 'mut' || item.kind === 'realloc') || initializing || closing;
+      const lifecycle: NonNullable<AccountInfo['lifecycle']> = initializing ? ['init', 'create', 'write'] : writable ? ['write'] : ['read'];
       if (constraints.some(item => item.kind === 'realloc')) lifecycle.push('realloc');
-      accounts.push({ id: `account:${uri}:quasar:${fieldNode.startPosition.row + 1}:${name}`, name, type, wrapperType, stateType, contextType: nodeText(field(struct, 'name')), signer: wrapperType === 'Signer' || constraints.some(item => item.kind === 'signer'), writable, executable: wrapperType === 'Program', unchecked: wrapperType === 'UncheckedAccount', raw: wrapperType === 'AccountView', addressExpectation: constraints.find(item => item.kind === 'address')?.expression ?? (wrapperType === 'Program' ? stateType : undefined), ownerValidated: wrapperType === 'Account', addressValidated: wrapperType === 'Program' || constraints.some(item => item.kind === 'address'), constraints, lifecycle: [...new Set(lifecycle)], location: loc(uri, fieldNode), confidence: 0.93, evidence: [{ description: 'Quasar derive(Accounts) field and account constraints', location: loc(uri, fieldNode) }] });
+      if (closing) lifecycle.push('close');
+      const programWrapper = wrapperType === 'Program' || wrapperType === 'Interface';
+      accounts.push({ id: `account:${uri}:quasar:${fieldNode.startPosition.row + 1}:${name}`, name, type, wrapperType, stateType, contextType: nodeText(field(struct, 'name')), signer: wrapperType === 'Signer' || constraints.some(item => item.kind === 'signer'), writable, executable: programWrapper, unchecked: wrapperType === 'UncheckedAccount', raw: wrapperType === 'AccountView', optional, addressExpectation: constraints.find(item => item.kind === 'address')?.expression ?? (programWrapper || wrapperType === 'Sysvar' ? stateType : undefined), ownerExpectation: wrapperType === 'SystemAccount' ? 'SystemProgram' : undefined, ownerValidated: ['Account', 'InterfaceAccount', 'SystemAccount'].includes(wrapperType ?? ''), addressValidated: programWrapper || wrapperType === 'Sysvar' || constraints.some(item => item.kind === 'address'), constraints, lifecycle: [...new Set(lifecycle)], location: loc(uri, fieldNode), confidence: 0.93, evidence: [{ description: 'Quasar derive(Accounts) field and account constraints', location: loc(uri, fieldNode) }] });
     }
   }
   return { instructions, accounts };
@@ -56,8 +62,16 @@ export function enrichQuasarSemantics(root: RustNode, uri: string): { instructio
 
 function parseConstraints(attributes: string, uri: string, node: RustNode): AccountConstraint[] {
   const body = /#\[account\s*\(([\s\S]*?)\)\]/.exec(attributes)?.[1]; if (!body) return [];
-  return splitRustExpressions(body).map(raw => { const equals = raw.indexOf('='); const kind = (equals < 0 ? raw : raw.slice(0, equals)).trim(); return { kind, expression: equals < 0 ? undefined : raw.slice(equals + 1).trim(), location: loc(uri, node) }; });
+  return splitRustExpressions(body).map(raw => {
+    const value = raw.trim(); const equals = topLevelEquals(value);
+    if (equals >= 0) return { kind: value.slice(0, equals).trim(), expression: value.slice(equals + 1).trim(), location: loc(uri, node) };
+    if (/^init\s*\(\s*idempotent\s*\)$/.test(value)) return { kind: 'init(idempotent)', location: loc(uri, node) };
+    const call = /^([A-Za-z_][A-Za-z0-9_:]*)\s*\(([\s\S]*)\)$/.exec(value);
+    return { kind: call?.[1] === 'constraints' ? 'constraint' : call?.[1] ?? value, expression: call?.[2]?.trim() || undefined, location: loc(uri, node) };
+  });
 }
+
+function topLevelEquals(value: string): number { let depth = 0; let quote = ''; let escaped = false; for (let index = 0; index < value.length; index++) { const char = value[index]; if (quote) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === quote) quote = ''; continue; } if (char === '"' || char === "'") quote = char; else if ('([{'.includes(char)) depth++; else if (')]}'.includes(char)) depth--; else if (char === '=' && depth === 0) return index; } return -1; }
 
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }
 function attributesFor(node: RustNode): string { const items: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { items.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return items.join('\n'); }

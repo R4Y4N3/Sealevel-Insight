@@ -28,6 +28,22 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(new Ajv2020({ strict: true }).validate(schema, report), false);
   });
 
+  it('rejects malformed semantic records instead of validating only their containers', async () => {
+    const report = await sampleReport('pub fn handler() {}');
+    report.programs[0].functions = ['not-a-function' as never]; report.programs[0].securitySurface.cpiSites = [42 as never];
+    const schema = JSON.parse(await fs.readFile(path.resolve(__dirname, '../../../schemas/report.schema.json'), 'utf8'));
+    const validate = new Ajv2020({ strict: true }).compile(schema);
+    assert.equal(validate(report), false); assert.ok(validate.errors?.some(error => /functions|cpiSites/.test(error.instancePath)));
+  });
+
+  it('validates instruction dossiers, state flows, and the audit manifest strictly', async () => {
+    const report = await sampleReport('use anchor_lang::prelude::*; #[program] mod p { pub fn run(ctx: Context<A>) -> Result<()> { Ok(()) } } #[derive(Accounts)] struct A<\'info> { signer: Signer<\'info> }');
+    assert.equal(report.auditManifest?.scope.dossiers, 1); assert.equal(report.programs[0].instructionDossiers?.length, 1); assert.equal(report.programs[0].stateFlows?.length, 1);
+    const malformed = JSON.parse(JSON.stringify(report)); malformed.programs[0].instructionDossiers[0].accounts[0].ownerValidation.validated = 'yes';
+    const schema = JSON.parse(await fs.readFile(path.resolve(__dirname, '../../../schemas/report.schema.json'), 'utf8'));
+    const validate = new Ajv2020({ strict: true }).compile(schema); assert.equal(validate(malformed), false); assert.ok(validate.errors?.some(error => /ownerValidation/.test(error.instancePath)));
+  });
+
   it('merges an explicit CLI scope file with explicit include patterns', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-scope-'));
     try {
@@ -36,6 +52,16 @@ describe('Sealevel Insight v0.6 release semantics', () => {
       await fs.writeFile(path.join(root, 'audit.scope'), '+src/**/*.rs\n!generated/**\n');
       const scope = await buildScope(root, { include: [], exclude: [], scopeFile: 'audit.scope' });
       assert.deepEqual(scope.inScope, ['src/lib.rs']); assert.equal(scope.configSource, path.join(root, 'audit.scope'));
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it('prunes internal analysis and editor caches before scope hashing', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-prune-'));
+    try {
+      await fs.mkdir(path.join(root, 'src')); await fs.writeFile(path.join(root, 'src/lib.rs'), 'fn main() {}');
+      for (const directory of ['.real-world-cache', '.vscode-test', '.sealevel-insight-cache']) { await fs.mkdir(path.join(root, directory)); await fs.writeFile(path.join(root, directory, 'hidden.rs'), 'fn hidden() {}'); }
+      const scope = await buildScope(root);
+      assert.deepEqual(scope.files.map(file => file.path), ['src/lib.rs']);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -81,7 +107,19 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const before = await sampleReport('#[program]\npub mod p { pub fn go(ctx: Context<A>) {} }\n#[derive(Accounts)] pub struct A<\'info> { pub vault: Account<\'info, Vault> }');
     const after = await sampleReport('#[program]\npub mod p { pub fn go(ctx: Context<A>) { invoke(&[], &[]); } }\n#[derive(Accounts)] pub struct A<\'info> { #[account(mut)] pub vault: Account<\'info, Vault> }');
     const diff = diffReports(before, after);
-    assert.ok(diff.changes.accounts.some(item => item.fields?.writable)); assert.ok(diff.changes.instructions.some(item => item.fields?.cpis));
+    assert.ok(diff.changes.accounts.some(item => item.fields?.writable)); assert.ok(diff.changes.instructions.some(item => item.fields?.cpis)); assert.ok(diff.changes.instructionDossiers.some(item => item.fields?.cpis)); assert.ok(diff.changes.stateFlows.length > 0);
+  });
+
+  it('diffs same-named functions by qualified semantic identity', async () => {
+    const before = await sampleReport('mod a { pub fn validate() {} } mod b { pub fn validate() { if true {} } }');
+    const after = await sampleReport('mod a { pub fn validate() { if true {} } } mod b { pub fn validate() { if true {} } }');
+    const changed = diffReports(before, after).changedFunctions;
+    assert.equal(changed.length, 1); assert.match(changed[0].id, /crate::a::validate$/);
+  });
+
+  it('rejects incompatible report schemas before diffing', async () => {
+    const before = await sampleReport('fn a() {}'); const after = { ...before, schemaVersion: '0.7.0' };
+    assert.throws(() => diffReports(before, after), /Cannot diff report schema/);
   });
 
   it('keeps Quasar evidence separate from Anchor evidence', async () => {
@@ -99,12 +137,12 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   it('produces standalone HTML with strict offline CSP and sanitized embedded source', async () => {
     const report = await sampleReport('pub fn handler() {}'); report.workspace = { name: '</script><img src=x>', roots: ['/secret/root'] };
     const html = standaloneHtml(report);
-    assert.match(html, /default-src 'none'/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
+    assert.match(html, /default-src 'none'/); assert.match(html, /Audit Cockpit/); assert.match(html, /Instruction Dossiers/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
   });
 
   it('renders semantic coverage as a real percentage in Markdown', async () => {
     const report = await sampleReport('pub fn handler() {}'); report.coverage!.parsedFiles = { resolved: 4, total: 5, percent: 80 }; report.coverage!.unknownCalls = 2;
-    const markdown = markdownReport(report); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.match(markdown, /Unknown Calls 2/); assert.doesNotMatch(markdown, /8000\.0%/);
+    const markdown = markdownReport(report); assert.match(markdown, /Audit Manifest/); assert.match(markdown, /Instruction Dossiers/); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.match(markdown, /Unknown Calls 2/); assert.doesNotMatch(markdown, /8000\.0%/);
   });
 
   it('resolves external modules declared through a Rust path attribute', async () => {
@@ -184,6 +222,29 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     const report = await sampleReport('#[program] mod p { pub fn run() { external_crate::helper(); } }');
     assert.equal(report.programs[0].instructions[0].reachableSurface?.complete, true);
     assert.deepEqual(report.programs[0].instructions[0].reachableSurface?.unresolvedCalls, []);
+    assert.equal(report.programs[0].reviewHotspots?.some(item => item.reasons.some(reason => /unresolved|unknown\/dynamic/.test(reason))), false);
+  });
+
+  it('models current Quasar lifecycle and wrapper validations', async () => {
+    const report = await sampleReport('use quasar_lang::prelude::*; #[program] mod p { #[instruction] pub fn open(ctx: Ctx<CreateVault>) {} #[instruction] pub fn close(ctx: Ctx<CloseVault>) {} } #[account(discriminator = 1)] #[seeds(b"vault", authority: Address)] pub struct Vault { authority: Address, bump: u8 } #[derive(Accounts)] pub struct CreateVault { #[account(init(idempotent), payer = payer, address = Vault::seeds(authority.address()))] pub vault: Account<Vault>, #[account(mut)] pub payer: Signer, pub authority: Signer, pub system_program: Program<SystemProgram> } #[derive(Accounts)] pub struct CloseVault { #[account(mut, close(dest = authority))] pub vault: Account<Vault>, #[account(mut)] pub authority: Signer, pub token_program: Interface<TokenInterface>, pub system: SystemAccount }');
+    const program = report.programs[0];
+    const created = program.accounts.find(item => item.contextType === 'CreateVault' && item.name === 'vault')!;
+    const closed = program.accounts.find(item => item.contextType === 'CloseVault' && item.name === 'vault')!;
+    const tokenProgram = program.accounts.find(item => item.name === 'token_program')!; const system = program.accounts.find(item => item.name === 'system')!;
+    assert.deepEqual(created.lifecycle, ['init', 'create', 'write']); assert.deepEqual(created.constraints?.map(item => item.kind), ['init(idempotent)', 'payer', 'address', 'seeds']);
+    assert.deepEqual(closed.lifecycle, ['write', 'close']); assert.equal(closed.constraints?.find(item => item.kind === 'close')?.expression, 'dest = authority');
+    assert.equal(tokenProgram.executable, true); assert.equal(tokenProgram.addressValidated, true); assert.equal(system.ownerValidated, true); assert.equal(system.ownerExpectation, 'SystemProgram');
+  });
+
+  it('propagates account lifecycle and mutation sites into instruction dossiers', async () => {
+    const report = await sampleReport('use anchor_lang::prelude::*; #[program] pub mod p { pub fn create(ctx: Context<Create>) -> Result<()> { ctx.accounts.vault.set_inner(Vault { value: 1 }); Ok(()) } } #[derive(Accounts)] pub struct Create<\'info> { #[account(init, payer = payer, space = 16, close = payer)] pub vault: Account<\'info, Vault>, #[account(mut)] pub payer: Signer<\'info>, pub system_program: Program<\'info, System> } #[account] pub struct Vault { pub value: u64 }');
+    const surface = report.programs[0].instructions[0].reachableSurface!;
+    assert.equal(surface.initializationSites?.length, 1); assert.equal(surface.closeSites?.length, 1); assert.ok((surface.serializationSites?.length ?? 0) >= 1); assert.ok((surface.dataMutationSites?.length ?? 0) >= 1);
+    const state = report.programs[0].stateTypes?.find(item => item.name === 'Vault')!; assert.equal(state.initializationSites.length, 1); assert.equal(state.closeSites.length, 1);
+    const dossier = report.programs[0].instructionDossiers?.[0]!; const vault = dossier.accounts.find(item => item.name === 'vault')!;
+    assert.equal(dossier.reachability.complete, surface.complete); assert.deepEqual(dossier.reachability.incompleteReasons, surface.incompleteReasons); assert.equal(vault.ownerValidation.validated, true); assert.deepEqual(vault.lifecycle, ['close', 'create', 'init', 'write']); assert.ok(dossier.semanticSites.initialization.length > 0);
+    const flow = report.programs[0].stateFlows?.find(item => item.accountId === vault.accountId)!; assert.deepEqual(flow.operations, ['close', 'create', 'init', 'write']); assert.equal(flow.stateType, 'Vault');
+    assert.equal(report.auditManifest?.reviewQueue[0].dossierId, dossier.id); assert.equal(report.auditManifest?.scope.stateFlows, report.programs[0].stateFlows?.length);
   });
 
   it('treats absent parent workspace metadata as informational scope context', () => {

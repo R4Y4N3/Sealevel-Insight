@@ -16,6 +16,7 @@ import { portableReport } from '../../src/core/serialization';
 import { buildScope } from '../../src/core/scope';
 import { diffReports } from '../../src/core/diff';
 import { validateReport } from '../../src/analysis/invariants';
+import { applyCargoMetadata } from '../../src/discovery/cargoMetadata';
 
 const root = path.resolve(__dirname, '../../../test');
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
@@ -83,9 +84,9 @@ describe('Sealevel Insight analyzer', () => {
     const source = `pub fn flow() {\n  invoke(&a);\n  solana_cpi::invoke_signed(&a, &b, &c);\n  CpiContext::new(x, y);\n  let first = find_program_address(&[b"a"], &id);\n  let second = create_program_address(&[b"b"], &id);\n}`;
     const report = await analyzeSources([{ uri: 'flow/lib.rs', source, packageName: 'flow' }], wasm);
     const program = report.programs[0];
-    assert.equal(program.securitySurface.cpiSites.length, 3);
+    assert.equal(program.securitySurface.cpiSites.length, 2);
     assert.equal(program.securitySurface.pdaSites.length, 2);
-    assert.deepEqual(program.securitySurface.cpiSites.map(site => site.location.startLine), [2, 3, 4]);
+    assert.deepEqual(program.securitySurface.cpiSites.map(site => site.location.startLine), [2, 3]);
     assert.deepEqual(program.securitySurface.pdaSites.map(site => site.location.startLine), [5, 6]);
     assert.equal(program.securitySurface.cpiSites[1].pdaSigned, true);
   });
@@ -124,6 +125,34 @@ describe('Sealevel Insight analyzer', () => {
     const result = reconcileIdl({ instructions: [{ name: 'withdraw', location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, confidence: 1, evidence: [] }], identity: { programId: '222', sources: [], conflicts: [] } }, idl!);
     assert.equal(result.reconciliations[0].status, 'MATCHED');
     assert.equal(result.reconciliations[1].status, 'MISMATCH');
+  });
+
+  it('normalizes the current Solana IDL v0.1 shape without false name or state mismatches', () => {
+    const idl = normalizeIdl({
+      address: '111', metadata: { name: 'demo', version: '1.2.3', spec: '0.1.0', dependencies: [{ name: 'token', version: '1.0.0' }], deployments: { mainnet: null, testnet: null, devnet: '111', localnet: null } },
+      instructions: [{ name: 'doThing', discriminator: [1, 2, 3], docs: ['Does a thing'], accounts: [{ name: 'group', accounts: [{ name: 'authority', signer: true }, { name: 'vault', writable: true, address: 'vault-address', relations: ['authority'], pda: { seeds: [{ kind: 'const', value: [118] }] } }] }], args: [{ name: 'inputData', type: { defined: { name: 'Payload' } } }], returns: 'u64' }],
+      accounts: [{ name: 'Vault', discriminator: [9] }], types: [{ name: 'Payload', serialization: 'borsh', type: { kind: 'struct', fields: [{ name: 'value', type: 'u64' }] } }],
+      events: [{ name: 'Changed', discriminator: [7] }], constants: [{ name: 'MAX', type: 'u64', value: '10' }]
+    })!;
+    assert.equal(idl.name, 'demo'); assert.equal(idl.spec, '0.1.0'); assert.equal(idl.instructions[0].returns, 'u64'); assert.equal(idl.instructions[0].arguments?.[0].type, 'Payload');
+    assert.deepEqual(idl.instructions[0].accounts[1].compositePath, ['group']); assert.equal(idl.instructions[0].accounts[1].address, 'vault-address'); assert.deepEqual(idl.instructions[0].accounts[1].relations, ['authority']);
+    assert.deepEqual(idl.constants, [{ name: 'MAX', type: 'u64', value: '10', docs: undefined }]); assert.deepEqual(idl.validationErrors, []);
+    const result = reconcileIdl({
+      instructions: [{ name: 'do_thing', discriminator: '[1,2,3]', arguments: [{ name: 'input_data', type: 'Payload' }], location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, confidence: 1, evidence: [] }],
+      accounts: [
+        { id: 'account:authority', name: 'authority', type: 'Signer', signer: true, location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, confidence: 1, evidence: [] },
+        { id: 'account:vault', name: 'vault', type: 'Account<Vault>', writable: true, constraints: [{ kind: 'seeds', location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 } }], location: { uri: 'x', startLine: 1, startColumn: 0, endLine: 1, endColumn: 1 }, confidence: 1, evidence: [] }
+      ],
+      relationships: [{ instructionId: 'do_thing', accountId: 'account:authority', relationship: 'signer' }, { instructionId: 'do_thing', accountId: 'account:vault', relationship: 'writes' }],
+      stateTypes: [{ id: 'state:Vault', name: 'Vault', package: 'demo', fields: [], visibility: 'pub', serialization: ['borsh'], zeroCopy: false, dynamicSize: false, pdaIds: [], initializationSites: [], reallocSites: [], closeSites: [], evidence: [], location: { uri: 'x', startLine: 2, startColumn: 0, endLine: 2, endColumn: 1 } }], identity: { programId: '111', sources: [], conflicts: [] }
+      , events: [{ id: 'event:Changed', name: 'Changed', framework: 'anchor', location: { uri: 'x', startLine: 3, startColumn: 0, endLine: 3, endColumn: 1 }, emissionSites: [], evidence: [] }]
+    }, idl);
+    assert.equal(result.reconciliations.some(item => item.status === 'SOURCE_ONLY' || item.status === 'IDL_ONLY' || item.status === 'MISMATCH'), false, JSON.stringify(result.reconciliations));
+  });
+
+  it('reports malformed current-spec IDLs while retaining them for evidence', () => {
+    const idl = normalizeIdl({ metadata: { name: 'demo', version: '1', spec: '0.1.0' }, instructions: [{ name: 'run' }] })!;
+    assert.deepEqual(idl.validationErrors, ['v0.1.0 requires address.', 'instructions[0] requires a byte-array discriminator.', 'instructions[0] requires accounts.', 'instructions[0] requires args.']);
   });
 
   it('resolves only unambiguous direct calls in a call graph', async () => {
@@ -224,13 +253,14 @@ describe('Sealevel Insight analyzer', () => {
   });
 
   it('makes all report path fields portable without matching sibling prefixes', async () => {
-    const report = await analyzeSources([{ uri: 'file:///repo/program/src/lib.rs', source: 'fn run() {}', packageName: 'program', manifestUri: '/repo/program/Cargo.toml' }], wasm);
+    const report = await analyzeSources([{ uri: 'file:///repo/program/src/lib.rs', source: 'use anchor_lang::prelude::*; #[program] mod p { pub fn run(ctx: Context<A>) {} } #[derive(Accounts)] struct A<\'info> { signer: Signer<\'info> }', packageName: 'program', manifestUri: '/repo/program/Cargo.toml' }], wasm);
     report.workspaceGraph = { workspaces: [{ rootUri: '/repo', manifestUri: '/repo/Cargo.toml', members: ['/repo/program'], excluded: ['/repo/ignored'], defaultMembers: ['/repo/program'] }], packages: [], dependencyEdges: [], diagnostics: [] };
     const portable = portableReport(report, '/repo');
     assert.equal(portable.files[0].uri, 'program/src/lib.rs');
     assert.equal(portable.programs[0].manifestUri, 'program/Cargo.toml');
     assert.equal(portable.workspaceGraph?.workspaces[0].rootUri, '.');
     assert.deepEqual(portable.workspaceGraph?.workspaces[0].members, ['program']);
+    assert.doesNotMatch(JSON.stringify(portable), /file:\/\/\/repo\//); assert.equal(portable.auditManifest?.programs[0].instructionDossierIds[0], portable.programs[0].instructionDossiers?.[0].id);
     const outside = portableReport({ ...report, files: [{ ...report.files[0], uri: 'file:///repo-sibling/lib.rs' }] }, '/repo');
     assert.equal(outside.files[0].uri, 'file:///repo-sibling/lib.rs');
   });
@@ -253,7 +283,7 @@ describe('Sealevel Insight analyzer', () => {
     const before = await analyzeSources([{ uri: 'diff/lib.rs', source: 'fn removed() {}', packageName: 'diff' }], wasm);
     const after = await analyzeSources([{ uri: 'diff/lib.rs', source: 'fn added() {}', packageName: 'diff' }], wasm);
     const changed = diffReports(before, after).changedFunctions;
-    assert.deepEqual(changed, [{ id: 'diff:added', after: 1 }, { id: 'diff:removed', before: 1 }]);
+    assert.deepEqual(changed, [{ id: 'diff:function:crate::added', after: 1 }, { id: 'diff:function:crate::removed', before: 1 }]);
   });
 
   it('models Cargo workspace inheritance, targets, features, and target dependencies', () => {
@@ -316,6 +346,120 @@ describe('Sealevel Insight analyzer', () => {
     assert.equal(vault.ownerExpectation, 'crate::ID');
     assert.deepEqual(vault.constraints?.map(item => item.kind), ['init', 'payer', 'space', 'seeds', 'bump', 'owner', 'realloc', 'realloc::payer', 'realloc::zero']);
     assert.deepEqual(report.programs[0].securitySurface.pdaSites[0].seeds, ['b"vault"', 'payer.key().as_ref()']);
+  });
+
+  it('preserves current Anchor account-to-account relationships and wrapper guarantees', async () => {
+    const source = `#[program]
+pub mod p { pub fn create(ctx: Context<Create>) {} }
+#[derive(Accounts)]
+pub struct Create<'info> {
+  #[account(init, payer = payer, has_one = authority, close = refund, realloc = 64, realloc::payer = payer, seeds = [b"vault"], bump, seeds::program = other_program.key(), token::mint = mint, token::authority = authority, token::token_program = token_program, extensions::transfer_hook::program_id = hook_program)]
+  pub vault: Account<'info, Vault>,
+  pub payer: Signer<'info>, pub authority: Signer<'info>, pub refund: SystemAccount<'info>,
+  pub other_program: Interface<'info, OtherProgram>, pub token_program: Interface<'info, TokenInterface>, pub clock: Sysvar<'info, Clock>,
+  pub mint: InterfaceAccount<'info, Mint>, pub hook_program: UncheckedAccount<'info>
+}`;
+    const report = await analyzeSources([{ uri: 'anchor-relations.rs', source, packageName: 'anchor-relations' }], wasm);
+    const accounts = report.programs[0].accounts;
+    const vault = accounts.find(item => item.name === 'vault')!;
+    assert.deepEqual(vault.relations?.map(item => [item.kind, item.target]), [
+      ['payer', 'payer'], ['has-one', 'authority'], ['close-destination', 'refund'], ['realloc-payer', 'payer'], ['seed-program', 'other_program.key()'],
+      ['token-mint', 'mint'], ['token-authority', 'authority'], ['token-program', 'token_program'], ['extension-program', 'hook_program']
+    ]);
+    assert.equal(accounts.find(item => item.name === 'refund')?.ownerExpectation, 'system-program');
+    assert.equal(accounts.find(item => item.name === 'other_program')?.addressExpectation, 'OtherProgram');
+    assert.equal(accounts.find(item => item.name === 'clock')?.addressExpectation, 'sysvar:Clock');
+    assert.equal(report.programs[0].architecture?.edges.some(item => item.source === vault.id && item.label === 'has-one'), true);
+  });
+
+  it('models Anchor associated-token initialization as its actual generated CPI', async () => {
+    const source = `#[program] pub mod p { pub fn create(ctx: Context<Create>) {} }
+#[derive(Accounts)] pub struct Create<'info> {
+#[account(init_if_needed, payer = payer, associated_token::mint = mint, associated_token::authority = authority, associated_token::token_program = token_program)] pub ata: InterfaceAccount<'info, TokenAccount>,
+pub payer: Signer<'info>, pub authority: Signer<'info>, pub mint: InterfaceAccount<'info, Mint>, pub token_program: Interface<'info, TokenInterface>, pub system_program: Program<'info, System>, pub associated_token_program: Program<'info, AssociatedToken>
+}`;
+    const report = await analyzeSources([{ uri: 'anchor-ata.rs', source, packageName: 'anchor-ata' }], wasm);
+    const cpi = report.programs[0].securitySurface.cpiSites[0];
+    assert.equal(cpi.targetKind, 'associated-token'); assert.equal(cpi.operation, 'associated-token.create-idempotent'); assert.equal(cpi.operationCategory, 'token-account-create');
+  });
+
+  it('recognizes current Pinocchio lazy entrypoints', async () => {
+    const source = 'use pinocchio::{lazy_program_entrypoint, entrypoint::InstructionContext, ProgramResult}; lazy_program_entrypoint!(process_instruction); pub fn process_instruction(mut context: InstructionContext) -> ProgramResult { let _ = context.instruction_data(); Ok(()) }';
+    const report = await analyzeSources([{ uri: 'pinocchio-lazy.rs', source, packageName: 'pinocchio-lazy' }], wasm);
+    assert.equal(report.programs[0].frameworkEvidence.some(item => item.framework === 'pinocchio' && item.evidence.some(evidence => evidence.description === 'lazy_program_entrypoint!')), true);
+    assert.equal(report.programs[0].instructions.some(item => item.handler === 'process_instruction' && item.evidence.some(evidence => evidence.description.includes('explicit entrypoint'))), true);
+  });
+
+  it('extracts Steel macro discriminators, fields, and chain validation semantics', async () => {
+    const source = `use steel::*;
+#[repr(u8)] pub enum MyInstruction { Add = 7 }
+#[repr(C)] pub struct Add { pub value: [u8; 8] }
+instruction!(MyInstruction, Add);
+#[repr(u8)] pub enum MyAccount { Counter = 2 }
+#[repr(C)] #[derive(Pod, Zeroable)] pub struct Counter { pub value: u64 }
+account!(MyAccount, Counter);
+pub fn process_add(accounts: &[AccountInfo<'_>]) -> ProgramResult { let [counter_info, token_program] = accounts else { return Err(ProgramError::NotEnoughAccountKeys); }; let counter = counter_info.as_account_mut::<Counter>(&ID)?; token_program.is_program(&spl_token::ID)?; Ok(()) }`;
+    const report = await analyzeSources([{ uri: 'steel-current.rs', source, packageName: 'steel-current' }], wasm);
+    const instruction = report.programs[0].instructions.find(item => item.name === 'Add')!;
+    assert.equal(instruction.discriminator, '7'); assert.deepEqual(instruction.arguments, [{ name: 'value', type: '[u8; 8]' }]);
+    assert.equal(report.programs[0].accounts.find(item => item.wrapperType === 'SteelAccount')?.constraints?.[0].expression, '2');
+    assert.equal(report.programs[0].stateTypes?.find(item => item.name === 'Counter')?.framework, 'steel');
+    assert.equal(report.programs[0].stateTypes?.find(item => item.name === 'Counter')?.discriminator, '2');
+    const counter = report.programs[0].accounts.find(item => item.name === 'counter_info')!;
+    assert.equal(counter.stateType, 'Counter'); assert.equal(counter.ownerExpectation, '&ID'); assert.equal(counter.writable, true);
+    const tokenProgram = report.programs[0].accounts.find(item => item.name === 'token_program')!;
+    assert.equal(tokenProgram.executable, true); assert.equal(tokenProgram.addressExpectation, '&spl_token::ID');
+  });
+
+  it('imports saved Cargo metadata as an offline resolved graph', () => {
+    const graph = buildCargoGraph([
+      { uri: '/repo/Cargo.toml', text: '[workspace]\nmembers=["program"]' },
+      { uri: '/repo/program/Cargo.toml', text: '[package]\nname="program"\nversion="1.0.0"\n[dependencies]\nanchor-lang="1"' }
+    ], new Map([['/repo/program', ['entrypoint!(process_instruction);']]]));
+    applyCargoMetadata(graph, {
+      version: 1, workspace_root: '/repo', target_directory: '/repo/target', workspace_members: ['path+file:///repo/program#1.0.0'], workspace_default_members: ['path+file:///repo/program#1.0.0'],
+      packages: [
+        { id: 'path+file:///repo/program#1.0.0', name: 'program', version: '1.0.0', manifest_path: '/repo/program/Cargo.toml' },
+        { id: 'registry+https://github.com/rust-lang/crates.io-index#anchor-lang@1.0.0', name: 'anchor-lang', version: '1.0.0', manifest_path: '/cargo/anchor-lang/Cargo.toml', source: 'registry+https://github.com/rust-lang/crates.io-index' }
+      ],
+      resolve: { root: 'path+file:///repo/program#1.0.0', nodes: [
+        { id: 'path+file:///repo/program#1.0.0', features: ['default', 'idl-build'], deps: [{ name: 'anchor_lang', pkg: 'registry+https://github.com/rust-lang/crates.io-index#anchor-lang@1.0.0', dep_kinds: [{ kind: null, target: null }] }] },
+        { id: 'registry+https://github.com/rust-lang/crates.io-index#anchor-lang@1.0.0', features: ['default'], deps: [] }
+      ] }
+    }, '/repo/cargo-metadata.json');
+    assert.equal(graph.resolution?.nodes.length, 2); assert.equal(graph.resolution?.dependencyEdges.length, 1);
+    assert.deepEqual(graph.packages.find(item => item.name === 'program')?.enabledFeatures, ['default', 'idl-build']);
+    assert.deepEqual(graph.packages.find(item => item.name === 'program')?.dependencies[0].resolvedPackageIds, ['registry+https://github.com/rust-lang/crates.io-index#anchor-lang@1.0.0']);
+  });
+
+  it('classifies concrete System, Token, and associated-token CPI operations', async () => {
+    const source = `fn run() {
+      let ix = solana_system_interface::instruction::create_account(&payer, &vault, 1, 8, &ID);
+      solana_cpi::invoke_signed(&ix, &accounts, &seeds);
+      anchor_spl::token_interface::transfer_checked(ctx, 1, 6);
+      anchor_spl::associated_token::create_idempotent(ctx);
+    }`;
+    const report = await analyzeSources([{ uri: 'cpi-operations.rs', source, packageName: 'cpi-operations' }], wasm);
+    assert.deepEqual(report.programs[0].securitySurface.cpiSites.map(item => [item.targetKind, item.operation, item.operationCategory]), [
+      ['system-program', 'system.create-account', 'account-creation'],
+      ['spl-token', 'token.transfer-checked', 'token-transfer'],
+      ['associated-token', 'associated-token.create-idempotent', 'token-account-create']
+    ]);
+  });
+
+  it('classifies Pinocchio System instruction-builder method CPIs', async () => {
+    const source = 'use pinocchio_system::instructions::CreateAccount; fn initialize() { CreateAccount { from: payer, to: vault, lamports: 1, space: 8, owner: &ID }.invoke(); }';
+    const report = await analyzeSources([{ uri: 'pinocchio-system-cpi.rs', source, packageName: 'pinocchio-system-cpi' }], wasm);
+    const cpi = report.programs[0].securitySurface.cpiSites[0];
+    assert.equal(cpi.targetKind, 'system-program'); assert.equal(cpi.operation, 'system.create-account'); assert.equal(cpi.operationCategory, 'account-creation');
+  });
+
+  it('counts generic Anchor CPI wrapper calls but not context construction alone', async () => {
+    const source = 'use callee::cpi::execute as call_execute; fn run() { call_execute(CpiContext::new(program, accounts)); let unused = CpiContext::new(other, other_accounts); }';
+    const report = await analyzeSources([{ uri: 'anchor-custom-cpi.rs', source, packageName: 'anchor-custom-cpi' }], wasm);
+    assert.equal(report.programs[0].securitySurface.cpiSites.length, 1);
+    assert.equal(report.programs[0].securitySurface.cpiSites[0].target, 'program');
+    assert.equal(report.programs[0].securitySurface.cpiSites[0].targetKind, 'custom');
   });
 
   it('extracts state codecs, sysvars, runtime operations, events, and errors', async () => {

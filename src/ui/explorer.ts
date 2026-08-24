@@ -12,11 +12,12 @@ export class InsightExplorer implements vscode.TreeDataProvider<Item> {
     const report = this.report;
     if (!report) return [new Item('Run Analyze Workspace first', vscode.TreeItemCollapsibleState.None)];
     if (!element) return [
-      section(`Programs (${report.programs.length})`, 'programs', true), section(`Review Hotspots (${report.reviewProfile?.length ?? 0})`, 'hotspots'),
+      section(`Programs (${report.programs.length})`, 'programs', true), section(`Audit Manifest (${report.auditManifest?.scope.dossiers ?? 0} dossiers)`, 'audit-manifest'), section(`Review Hotspots (${report.reviewProfile?.length ?? 0})`, 'hotspots'),
       section('Semantic Coverage', 'coverage'), section('Scope', 'scope'), section(`IDL (${report.idl?.reconciliations.length ?? 0})`, 'idl'),
       section(`Diagnostics (${report.analysisDiagnostics?.length ?? 0})`, 'diagnostics')
     ];
     if (element.kind === 'programs') return report.programs.map(program => new Item(program.name, vscode.TreeItemCollapsibleState.Collapsed, 'program', program.name));
+    if (element.kind === 'audit-manifest') return auditManifestItems(report);
     if (element.kind === 'hotspots') return report.reviewProfile?.map(hotspot => sourceOrText(`${hotspot.label} • ${hotspot.score}`, 'hotspot', undefined, hotspot.location, hotspot.reasons.join('\n'))) ?? [];
     if (element.kind === 'coverage') return coverageItems(report);
     if (element.kind === 'scope') return report.files.map(file => sourceOrText(`${shortUri(file.uri)} • ${file.codeLines} nSLOC`, 'file', undefined, { uri: file.uri, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 }));
@@ -33,10 +34,11 @@ export class InsightExplorer implements vscode.TreeDataProvider<Item> {
     if (element.kind === 'instruction') { const instruction = program.instructions.find(item => (item.id ?? item.name) === element.itemId); return instruction ? instructionChildren(program, instruction) : []; }
     if (element.kind === 'instruction-accounts') return idItems(program.accounts, element.ids, 'account');
     if (element.kind === 'instruction-helpers') return program.functions.filter(fn => element.ids?.includes(fn.qualifiedName ?? fn.name)).map(fn => sourceOrText(fn.qualifiedName ?? fn.name, 'function', program.name, fn.location));
-    if (element.kind === 'instruction-cpis') return program.securitySurface.cpiSites.filter(site => element.ids?.includes(site.id ?? '')).map(site => sourceOrText(`${site.target ?? 'dynamic target'}${site.pdaSigned ? ' • signed' : ''}`, 'cpi', program.name, site.location));
+    if (element.kind === 'instruction-cpis') return program.securitySurface.cpiSites.filter(site => element.ids?.includes(site.id ?? '')).map(site => sourceOrText(`${site.operation ?? site.target ?? 'dynamic target'}${site.pdaSigned ? ' • signed' : ''}`, 'cpi', program.name, site.location));
     if (element.kind === 'instruction-pdas') return program.securitySurface.pdaSites.filter(site => element.ids?.includes(site.id ?? '')).map(site => sourceOrText(site.seeds?.join(', ') ?? 'unresolved seeds', 'pda', program.name, site.location));
     if (element.kind === 'instruction-external') return (program.externalPrograms ?? []).filter(item => element.ids?.includes(item.id)).map(item => sourceOrText(`${item.name} • ${item.cpiCount} CPI`, 'external', program.name, item.locations[0]));
     if (element.kind === 'instruction-sysvars') return (program.sysvars ?? []).filter(item => element.ids?.includes(item.id) || element.ids?.includes(item.name)).map(item => sourceOrText(item.name, 'sysvar', program.name, item.location));
+    if (element.kind === 'instruction-state-flows') return (program.stateFlows ?? []).filter(item => element.ids?.includes(item.id)).map(item => sourceOrText(`${program.accounts.find(account => account.id === item.accountId)?.name ?? item.accountId} • ${item.operations.join(', ')}${item.stateType ? ` • ${item.stateType}` : ''}`, 'state-flow', program.name, item.location, `Data: ${item.dataAccess.join(', ') || 'none'}\nLamports: ${item.lamportAccess.join(', ') || 'none'}\nSerialization: ${item.serialization.join(', ') || 'unknown'}`));
     if (element.kind === 'state') return (program.stateTypes ?? []).map(item => sourceOrText(`${item.name} • ${item.serialization.join(', ') || 'unknown codec'}`, 'state-item', program.name, item.location));
     if (element.kind === 'events') return (program.events ?? []).map(item => sourceOrText(item.name, 'event', program.name, item.location));
     if (element.kind === 'errors') return (program.errors ?? []).map(item => sourceOrText(`${item.name}${item.code === undefined ? '' : ` (${item.code})`}`, 'error', program.name, item.location));
@@ -52,13 +54,15 @@ function programSections(program: ProgramUnit): Item[] { return [
   section(`Errors (${program.errors?.length ?? 0})`, 'errors', false, program.name),
   section(`Dependencies (${program.packageDependencies?.length ?? 0})`, 'dependencies', false, program.name)
 ]; }
-function instructionChildren(program: ProgramUnit, instruction: InstructionInfo): Item[] { const surface = instruction.reachableSurface; return [
+function instructionChildren(program: ProgramUnit, instruction: InstructionInfo): Item[] { const surface = instruction.reachableSurface; const dossier = program.instructionDossiers?.find(item => item.instructionId === (instruction.id ?? instruction.name)); const flowIds = program.stateFlows?.filter(item => item.instructionId === (instruction.id ?? instruction.name)).map(item => item.id); return [
   idsSection(`Accounts (${surface?.accounts.length ?? 0})`, 'instruction-accounts', program.name, surface?.accounts),
+  idsSection(`State / Account Flows (${flowIds?.length ?? 0})`, 'instruction-state-flows', program.name, flowIds),
   idsSection(`Helpers (${surface?.functions.length ?? 0})`, 'instruction-helpers', program.name, surface?.functions),
   idsSection(`CPIs (${surface?.cpis.length ?? 0})`, 'instruction-cpis', program.name, surface?.cpis),
   idsSection(`PDAs (${surface?.pdas.length ?? 0})`, 'instruction-pdas', program.name, surface?.pdas),
   idsSection(`External Programs (${surface?.externalPrograms.length ?? 0})`, 'instruction-external', program.name, surface?.externalPrograms),
-  idsSection(`Sysvars (${surface?.sysvars?.length ?? 0})`, 'instruction-sysvars', program.name, surface?.sysvars)
+  idsSection(`Sysvars (${surface?.sysvars?.length ?? 0})`, 'instruction-sysvars', program.name, surface?.sysvars),
+  new Item(`Lifecycle sites • init ${dossier?.semanticSites.initialization.length ?? 0} • realloc ${dossier?.semanticSites.realloc.length ?? 0} • close ${dossier?.semanticSites.close.length ?? 0}`, vscode.TreeItemCollapsibleState.None, 'instruction-lifecycle', program.name)
 ]; }
 function idItems(accounts: AccountInfo[], ids: string[] | undefined, kind: string): Item[] { return accounts.filter(item => ids?.includes(item.id ?? '')).map(item => sourceOrText(`${item.name ?? item.type}${item.writable ? ' • writable' : ''}${item.signer ? ' • signer' : ''}`, kind, undefined, item.location)); }
 function coverageItems(report: WorkspaceReport): Item[] { return Object.entries(report.coverage ?? {}).flatMap(([name, value]) => {
@@ -66,6 +70,13 @@ function coverageItems(report: WorkspaceReport): Item[] { return Object.entries(
   if (typeof value === 'number') return [new Item(`${human(name)}: ${value}`, vscode.TreeItemCollapsibleState.None, 'coverage-item')];
   return [];
 }); }
+function auditManifestItems(report: WorkspaceReport): Item[] { const manifest = report.auditManifest; if (!manifest) return [new Item('Audit manifest unavailable', vscode.TreeItemCollapsibleState.None, 'audit-manifest-item')]; const unresolved = manifest.unresolved; return [
+  new Item(`${manifest.analysisMode} • format ${manifest.formatVersion}`, vscode.TreeItemCollapsibleState.None, 'audit-manifest-item'),
+  new Item(`${manifest.scope.programs} programs • ${manifest.scope.sourceFiles} files • ${manifest.scope.instructions} instructions`, vscode.TreeItemCollapsibleState.None, 'audit-manifest-item'),
+  new Item(`${manifest.scope.stateFlows} account/state flows • ${manifest.externalPrograms.length} external programs`, vscode.TreeItemCollapsibleState.None, 'audit-manifest-item'),
+  new Item(`Unresolved • ${unresolved.incompleteInstructionDossierIds.length} surfaces • ${unresolved.unknownOrDynamicCallIds.length} calls • ${unresolved.dynamicCpiIds.length} CPIs • ${unresolved.idlMismatchItems.length} IDL items`, vscode.TreeItemCollapsibleState.None, 'audit-manifest-item'),
+  ...manifest.reviewQueue.slice(0, 20).map(item => sourceOrText(`${item.program}::${item.instruction} • review ${item.score}${item.complete ? '' : ' • incomplete'}`, 'audit-review-item', item.program, item.location, item.reasons.join('\n')))
+]; }
 function section(label: string, kind: string, expanded = false, programName?: string): Item { return new Item(label, expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed, kind, programName); }
 function idsSection(label: string, kind: string, programName: string, ids?: string[]): Item { const item = section(label, kind, false, programName); item.ids = ids; return item; }
 function sourceOrText(label: string, kind: string, programName?: string, location?: SourceLocation, tooltip?: string): Item { const item = location ? Item.source(label, kind, programName, location) : new Item(label, vscode.TreeItemCollapsibleState.None, kind, programName); item.tooltip = tooltip; return item; }

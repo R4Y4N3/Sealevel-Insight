@@ -13,7 +13,7 @@ export function detectFramework(source: string, uri: string): FrameworkEvidence[
     }
   };
   if (/anchor[-_]lang|anchor_lang::|anchor_spl::/.test(source)) add('anchor', 0.98, ['anchor-lang', 'anchor_lang', '#[program]', '#[derive(Accounts)]']);
-  add('pinocchio', 0.95, ['pinocchio', 'AccountView', 'pinocchio::program_entrypoint']);
+  add('pinocchio', 0.95, ['pinocchio', 'AccountView', 'InstructionContext', 'program_entrypoint!', 'lazy_program_entrypoint!', 'process_entrypoint']);
   add('native-solana', 0.9, ['solana_program', 'solana-program', 'entrypoint!', 'process_instruction']);
   add('steel', 0.8, ['steel', 'account!', 'instruction!']);
   add('quasar', 0.78, ['quasar-lang', 'quasar-spl', 'quasar::']);

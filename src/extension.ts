@@ -12,6 +12,7 @@ import { enrichProgramIdentities, programIdentityFingerprint } from './discovery
 import { analysisCacheKey, clearAnalysisCache, readAnalysisCache, writeAnalysisCache } from './core/cache';
 import { buildScope } from './core/scope';
 import { diffReports } from './core/diff';
+import { refreshAuditProducts } from './analysis/auditProducts';
 
 type AnalysisMode = 'workspace' | 'package' | 'file';
 
@@ -50,6 +51,7 @@ export function activate(context: vscode.ExtensionContext): void {
           report.workspace = { name: workspaceFolders.map(folder => folder.name).join(', '), roots: workspaceFolders.map(folder => folder.uri.fsPath) };
           const identityDiagnostics = (await Promise.all(workspaceFolders.map(folder => enrichProgramIdentities(folder.uri.fsPath, report!.programs)))).flat(); report.analysisDiagnostics?.push(...identityDiagnostics); report.diagnostics.push(...identityDiagnostics.map(item => item.message));
           if (enableIdl) { const idlDiagnostics = discoveries.flatMap(item => item.diagnostics); report.analysisDiagnostics?.push(...idlDiagnostics); report.diagnostics.push(...idlDiagnostics.map(item => item.message)); report.idl = reconcileIdls(report.programs, discoveries.flatMap(item => item.programs)); for (const program of report.programs) program.capabilities = buildCapabilities(program, true); }
+          refreshAuditProducts(report);
           if (token.isCancellationRequested || generation !== analysisGeneration) return;
           await writeAnalysisCache(cacheDir, cacheKey, report);
         } else progress.report({ message: 'Loaded deterministic analysis cache' });

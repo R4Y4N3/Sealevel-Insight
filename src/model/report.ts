@@ -18,6 +18,13 @@ export interface AccountConstraint {
   location: SourceLocation;
 }
 
+export interface AccountRelation {
+  kind: 'has-one' | 'payer' | 'close-destination' | 'realloc-payer' | 'seed-program' | 'token-mint' | 'token-authority' | 'token-program' | 'mint-authority' | 'mint-freeze-authority' | 'associated-token-mint' | 'associated-token-authority' | 'associated-token-program' | 'extension-authority' | 'extension-program' | 'extension-address';
+  target: string;
+  constraint: string;
+  location: SourceLocation;
+}
+
 export interface FileMetric {
   uri: string;
   lines: number;
@@ -159,6 +166,7 @@ export interface AccountInfo {
   serialization?: string[];
   contextType?: string;
   constraints?: AccountConstraint[];
+  relations?: AccountRelation[];
   location: SourceLocation;
   evidence: Evidence[];
   confidence: number;
@@ -188,6 +196,8 @@ export interface CpiSite {
   enclosingInstruction?: string;
   target?: string;
   targetKind?: ExternalProgramKind;
+  operation?: string;
+  operationCategory?: CpiOperationCategory;
   invocationApi?: string;
   instructionExpression?: string;
   accountArguments?: string[];
@@ -199,6 +209,8 @@ export interface CpiSite {
   evidence: Evidence[];
   confidence: number;
 }
+
+export type CpiOperationCategory = 'account-creation' | 'allocation' | 'ownership-change' | 'lamport-transfer' | 'token-transfer' | 'token-mint' | 'token-burn' | 'account-close' | 'authority-change' | 'freeze' | 'thaw' | 'token-account-create' | 'token-account-recovery' | 'initialization' | 'nonce' | 'other';
 
 export interface SecuritySurface {
   signerSignals: number;
@@ -250,6 +262,7 @@ export interface CargoDependency {
   targetCondition?: string;
   kind: 'normal' | 'dev' | 'build';
   internalPackageId?: string;
+  resolvedPackageIds?: string[];
   evidence: Evidence[];
 }
 
@@ -270,6 +283,8 @@ export interface CargoPackage {
   version?: string;
   edition?: string;
   buildScript?: string;
+  metadataId?: string;
+  enabledFeatures?: string[];
 }
 
 export interface CargoWorkspace {
@@ -285,8 +300,13 @@ export interface WorkspaceGraph {
   workspaces: CargoWorkspace[];
   packages: CargoPackage[];
   dependencyEdges: Array<{ source: string; target: string; kind: 'internal' | 'external' }>;
+  resolution?: CargoResolution;
   diagnostics: AnalysisDiagnostic[];
 }
+
+export interface CargoResolutionDependency { name: string; packageId: string; kinds: Array<{ kind: 'normal' | 'dev' | 'build'; target?: string }>; }
+export interface CargoResolutionNode { packageId: string; name: string; version: string; source?: string; features: string[]; dependencies: CargoResolutionDependency[]; }
+export interface CargoResolution { sourceUri: string; formatVersion: 1; workspaceRoot?: string; targetDirectory?: string; rootPackageId?: string; workspaceMembers: string[]; workspaceDefaultMembers: string[]; nodes: CargoResolutionNode[]; dependencyEdges: Array<{ source: string; target: string; name: string; kinds: Array<{ kind: 'normal' | 'dev' | 'build'; target?: string }> }>; }
 
 export interface ProgramIdentity {
   programId?: string;
@@ -309,6 +329,136 @@ export interface ReviewHotspot {
 }
 
 export interface ReviewComplexity { score: number; level: 'Low Review Surface' | 'Moderate Review Surface' | 'Elevated Review Surface' | 'Heavy Review Surface'; components: Array<{ label: string; value: number; weight: number; contribution: number }>; }
+
+export interface InstructionAccountDossier {
+  accountId: string;
+  name: string;
+  type: string;
+  stateTypeId?: string;
+  stateType?: string;
+  relationship: InstructionAccountRelationship['relationship'];
+  direct: boolean;
+  signer: boolean;
+  writable: boolean;
+  executable: boolean;
+  unchecked: boolean;
+  optional: boolean;
+  ownerValidation: { validated: boolean; expected?: string };
+  addressValidation: { validated: boolean; expected?: string };
+  pdaId?: string;
+  lifecycle: AccountInfo['lifecycle'];
+  dataAccess: AccountInfo['dataAccess'];
+  lamportAccess: AccountInfo['lamportAccess'];
+  serialization: string[];
+  constraints: string[];
+  relations: AccountRelation[];
+  location: SourceLocation;
+  evidence: Evidence[];
+}
+
+export interface InstructionCpiDossier {
+  cpiId: string;
+  direct: boolean;
+  target?: string;
+  targetKind?: ExternalProgramKind;
+  operation?: string;
+  operationCategory?: CpiOperationCategory;
+  functionName?: string;
+  invocationApi?: string;
+  programAccountExpression?: string;
+  accountArguments: string[];
+  pdaSigned: boolean;
+  signerPdaIds: string[];
+  location: SourceLocation;
+  evidence: Evidence[];
+}
+
+export interface InstructionPdaDossier {
+  pdaId: string;
+  direct: boolean;
+  seeds: string[];
+  bump?: string;
+  programIdExpression?: string;
+  usedAsSigner: boolean;
+  relatedAccountId?: string;
+  relatedCpiIds: string[];
+  location: SourceLocation;
+  evidence: Evidence[];
+}
+
+export interface InstructionDossier {
+  id: string;
+  program: string;
+  instructionId: string;
+  name: string;
+  handler?: string;
+  contextType?: string;
+  discriminator?: string;
+  arguments: Array<{ name: string; type?: string }>;
+  location: SourceLocation;
+  reachability: { complete: boolean; incompleteReasons: string[]; functions: string[]; unresolvedCalls: string[]; ambiguousCalls: string[] };
+  accounts: InstructionAccountDossier[];
+  cpis: InstructionCpiDossier[];
+  pdas: InstructionPdaDossier[];
+  stateTypeIds: string[];
+  externalProgramIds: string[];
+  sysvarIds: string[];
+  runtimeOperationIds: string[];
+  eventIds: string[];
+  errorIds: string[];
+  semanticSites: {
+    initialization: string[];
+    realloc: string[];
+    close: string[];
+    serialization: string[];
+    deserialization: string[];
+    lamportMutation: string[];
+    dataMutation: string[];
+  };
+  reviewComplexity?: ReviewComplexity;
+  evidence: Evidence[];
+}
+
+export type StateFlowOperation = 'read' | 'write' | 'init' | 'create' | 'realloc' | 'close' | 'lamport-transfer' | 'unknown';
+export interface StateFlow {
+  id: string;
+  instructionId: string;
+  accountId: string;
+  stateTypeId?: string;
+  stateType?: string;
+  direct: boolean;
+  relationship: InstructionAccountRelationship['relationship'];
+  operations: StateFlowOperation[];
+  dataAccess: Array<'read' | 'write'>;
+  lamportAccess: Array<'read' | 'write'>;
+  serialization: string[];
+  location: SourceLocation;
+  evidence: Evidence[];
+}
+
+export interface AuditManifest {
+  formatVersion: 1;
+  analysisMode: 'local-offline-deterministic';
+  scope: { programs: number; packages: number; sourceFiles: number; instructions: number; dossiers: number; stateFlows: number };
+  programs: Array<{
+    program: string;
+    packageId?: string;
+    packageKind?: PackageKind;
+    programId?: string;
+    frameworks: string[];
+    sourceFiles: string[];
+    instructionDossierIds: string[];
+    stateFlowIds: string[];
+    externalProgramIds: string[];
+    dependencyCount: number;
+    reviewScore: number;
+    coverageComplete: boolean;
+  }>;
+  reviewQueue: Array<{ dossierId: string; program: string; instruction: string; score: number; complete: boolean; reasons: string[]; location: SourceLocation }>;
+  externalPrograms: Array<{ id: string; program: string; name: string; kind: string; programId?: string; cpiCount: number; signedCpiCount: number; calledByInstructions: string[] }>;
+  unresolved: { incompleteInstructionDossierIds: string[]; unknownOrDynamicCallIds: string[]; ambiguousCallIds: string[]; dynamicCpiIds: string[]; idlMismatchItems: string[] };
+  evidence: Evidence[];
+}
 
 export interface StateAccountType { id: string; name: string; package: string; framework?: string; fields: Array<{ name: string; type: string; visibility?: string }>; visibility: string; serialization: string[]; zeroCopy: boolean; discriminator?: string; declaredSpace?: string; staticSize?: number; dynamicSize: boolean; pdaIds: string[]; initializationSites: string[]; reallocSites: string[]; closeSites: string[]; evidence: Evidence[]; location: SourceLocation; }
 export interface SysvarUse { id: string; name: string; functionName?: string; instructionIds: string[]; accountId?: string; location: SourceLocation; evidence: Evidence[]; }
@@ -358,7 +508,8 @@ export interface ArchitectureNode {
 export interface ArchitectureEdge {
   source: string;
   target: string;
-  type: 'uses' | 'reads' | 'writes' | 'signs' | 'derives' | 'cpi' | 'calls';
+  type: 'uses' | 'reads' | 'writes' | 'signs' | 'derives' | 'cpi' | 'calls' | 'relates';
+  label?: string;
 }
 
 export interface ProgramUnit {
@@ -390,6 +541,8 @@ export interface ProgramUnit {
   events?: EventInfo[];
   errors?: ErrorInfo[];
   reviewComplexity?: ReviewComplexity;
+  instructionDossiers?: InstructionDossier[];
+  stateFlows?: StateFlow[];
 }
 
 export interface WorkspaceReport {
@@ -405,6 +558,7 @@ export interface WorkspaceReport {
   reviewProfile?: ReviewHotspot[];
   workspaceGraph?: WorkspaceGraph;
   idl?: IdlReport;
+  auditManifest?: AuditManifest;
   summary: {
     rustFiles: number;
     loc: number;
@@ -426,7 +580,44 @@ export interface WorkspaceReport {
 
 export interface CallSite { id: string; caller: string; callee: string; resolved: boolean; sourceExpression?: string; candidateTargets?: string[]; target?: string; status?: CallResolutionStatus; confidence?: number; location: SourceLocation; evidence: Evidence[]; }
 export interface CallGraph { symbols: string[]; calls: CallSite[]; edges: Array<{ source: string; target: string; confidence: number }>; }
-export interface IdlInstruction { name: string; discriminator?: string; arguments?: Array<{ name: string; type?: string }>; accounts: Array<{ name: string; signer?: boolean; writable?: boolean; optional?: boolean; pda?: unknown }>; }
-export interface IdlProgram { name?: string; address?: string; version?: string; spec?: string; instructions: IdlInstruction[]; types?: Array<{ name: string; type?: unknown }>; events?: Array<{ name: string }>; errors?: Array<{ name: string; code?: number; message?: string }>; sourceUri?: string; }
+export interface IdlInstructionAccount {
+  name: string;
+  signer?: boolean;
+  writable?: boolean;
+  optional?: boolean;
+  address?: string;
+  pda?: unknown;
+  relations?: string[];
+  docs?: string[];
+  compositePath?: string[];
+}
+export interface IdlInstruction {
+  name: string;
+  discriminator?: string;
+  arguments?: Array<{ name: string; type?: string; docs?: string[] }>;
+  accounts: IdlInstructionAccount[];
+  returns?: string;
+  docs?: string[];
+}
+export interface IdlProgram {
+  name?: string;
+  address?: string;
+  version?: string;
+  spec?: string;
+  description?: string;
+  repository?: string;
+  contact?: string;
+  deployments?: Record<string, string | null>;
+  dependencies?: Array<{ name: string; version: string }>;
+  docs?: string[];
+  instructions: IdlInstruction[];
+  accounts?: Array<{ name: string; discriminator?: string }>;
+  types?: Array<{ name: string; type?: unknown; serialization?: unknown; repr?: unknown; generics?: unknown[]; docs?: string[] }>;
+  events?: Array<{ name: string; discriminator?: string }>;
+  errors?: Array<{ name: string; code?: number; message?: string }>;
+  constants?: Array<{ name: string; type?: string; value?: string; docs?: string[] }>;
+  validationErrors?: string[];
+  sourceUri?: string;
+}
 export interface IdlReconciliation { status: 'MATCHED' | 'SOURCE_ONLY' | 'IDL_ONLY' | 'MISMATCH' | 'UNKNOWN'; item: string; details?: string; }
 export interface IdlReport { programs: IdlProgram[]; reconciliations: IdlReconciliation[]; diagnostics: string[]; }

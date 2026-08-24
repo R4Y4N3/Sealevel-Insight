@@ -9,11 +9,30 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     unique(program.accounts.map(item => item.id).filter((id): id is string => !!id), `${program.name}:account`, add);
     unique(program.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id), `${program.name}:cpi`, add);
     unique(program.securitySurface.pdaSites.map(item => item.id).filter((id): id is string => !!id), `${program.name}:pda`, add);
+    unique((program.instructionDossiers ?? []).map(item => item.id), `${program.name}:dossier`, add);
+    unique((program.stateFlows ?? []).map(item => item.id), `${program.name}:state-flow`, add);
     const accountIds = new Set(program.accounts.map(item => item.id));
     const instructionIds = new Set(program.instructions.flatMap(item => [item.id, item.name]).filter((id): id is string => !!id));
+    const cpiIds = new Set(program.securitySurface.cpiSites.map(item => item.id).filter((id): id is string => !!id));
+    const pdaIds = new Set(program.securitySurface.pdaSites.map(item => item.id).filter((id): id is string => !!id));
+    const stateTypeIds = new Set((program.stateTypes ?? []).map(item => item.id));
     for (const relationship of program.relationships ?? []) {
       if (!accountIds.has(relationship.accountId)) add(`Dangling account relationship ${relationship.accountId} in ${program.name}`, `relationship-account:${program.name}:${relationship.accountId}`);
       if (!instructionIds.has(relationship.instructionId)) add(`Dangling instruction relationship ${relationship.instructionId} in ${program.name}`, `relationship-instruction:${program.name}:${relationship.instructionId}`);
+    }
+    for (const dossier of program.instructionDossiers ?? []) {
+      if (!instructionIds.has(dossier.instructionId)) add(`Instruction dossier ${dossier.id} references missing instruction ${dossier.instructionId}`, `dossier-instruction:${program.name}:${dossier.id}`);
+      for (const account of dossier.accounts) {
+        if (!accountIds.has(account.accountId)) add(`Instruction dossier ${dossier.id} references missing account ${account.accountId}`, `dossier-account:${program.name}:${dossier.id}:${account.accountId}`);
+        if (account.stateTypeId && !stateTypeIds.has(account.stateTypeId)) add(`Instruction dossier ${dossier.id} references missing state type ${account.stateTypeId}`, `dossier-state:${program.name}:${dossier.id}:${account.stateTypeId}`);
+      }
+      for (const cpi of dossier.cpis) if (!cpiIds.has(cpi.cpiId)) add(`Instruction dossier ${dossier.id} references missing CPI ${cpi.cpiId}`, `dossier-cpi:${program.name}:${dossier.id}:${cpi.cpiId}`);
+      for (const pda of dossier.pdas) if (!pdaIds.has(pda.pdaId)) add(`Instruction dossier ${dossier.id} references missing PDA ${pda.pdaId}`, `dossier-pda:${program.name}:${dossier.id}:${pda.pdaId}`);
+    }
+    for (const flow of program.stateFlows ?? []) {
+      if (!instructionIds.has(flow.instructionId)) add(`State flow ${flow.id} references missing instruction ${flow.instructionId}`, `state-flow-instruction:${program.name}:${flow.id}`);
+      if (!accountIds.has(flow.accountId)) add(`State flow ${flow.id} references missing account ${flow.accountId}`, `state-flow-account:${program.name}:${flow.id}`);
+      if (flow.stateTypeId && !stateTypeIds.has(flow.stateTypeId)) add(`State flow ${flow.id} references missing state type ${flow.stateTypeId}`, `state-flow-state:${program.name}:${flow.id}`);
     }
     const nodeIds = new Set(program.architecture?.nodes.map(node => node.id) ?? []);
     for (const edge of program.architecture?.edges ?? []) {
@@ -21,6 +40,17 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     }
     for (const location of locations(program)) if (!validLocation(location)) add(`Invalid source location ${location.uri}:${location.startLine}:${location.startColumn}`, `location:${program.name}:${location.uri}:${location.startLine}:${location.startColumn}`, location);
     if (program.reviewComplexity && (!Number.isFinite(program.reviewComplexity.score) || program.reviewComplexity.score < 0)) add(`Invalid review complexity for ${program.name}`, `review:${program.name}`);
+  }
+  if (report.auditManifest) {
+    const dossierIds = new Set(report.programs.flatMap(program => program.instructionDossiers?.map(item => item.id) ?? []));
+    const flowIds = new Set(report.programs.flatMap(program => program.stateFlows?.map(item => item.id) ?? []));
+    for (const program of report.auditManifest.programs) {
+      for (const id of program.instructionDossierIds) if (!dossierIds.has(id)) add(`Audit manifest references missing instruction dossier ${id}`, `manifest-dossier:${id}`);
+      for (const id of program.stateFlowIds) if (!flowIds.has(id)) add(`Audit manifest references missing state flow ${id}`, `manifest-state-flow:${id}`);
+    }
+    for (const item of report.auditManifest.reviewQueue) if (!dossierIds.has(item.dossierId)) add(`Audit review queue references missing instruction dossier ${item.dossierId}`, `manifest-review:${item.dossierId}`);
+    const scope = report.auditManifest.scope;
+    if (scope.dossiers !== dossierIds.size || scope.stateFlows !== flowIds.size || scope.instructions !== report.summary.instructions) add('Audit manifest scope counts do not match detailed records', 'manifest-scope');
   }
   const expected = {
     rustFiles: report.files.length,
@@ -37,4 +67,4 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
 
 function unique(ids: string[], prefix: string, add: (message: string, key: string) => void): void { const seen = new Set<string>(); for (const id of ids) { if (seen.has(id)) add(`Duplicate semantic ID ${id}`, `${prefix}:${id}`); seen.add(id); } }
 function validLocation(location: SourceLocation): boolean { return !!location.uri && Number.isInteger(location.startLine) && location.startLine >= 1 && Number.isInteger(location.endLine) && location.endLine >= location.startLine && Number.isInteger(location.startColumn) && location.startColumn >= 0 && Number.isInteger(location.endColumn) && location.endColumn >= 0 && (location.endLine > location.startLine || location.endColumn >= location.startColumn); }
-function locations(program: WorkspaceReport['programs'][number]): SourceLocation[] { return [...program.functions.map(item => item.location), ...program.instructions.map(item => item.location), ...program.accounts.map(item => item.location), ...program.securitySurface.cpiSites.map(item => item.location), ...program.securitySurface.pdaSites.map(item => item.location), ...(program.stateTypes ?? []).map(item => item.location), ...(program.sysvars ?? []).map(item => item.location), ...(program.runtimeOperations ?? []).map(item => item.location), ...(program.events ?? []).map(item => item.location), ...(program.errors ?? []).map(item => item.location)]; }
+function locations(program: WorkspaceReport['programs'][number]): SourceLocation[] { return [...program.functions.map(item => item.location), ...program.instructions.map(item => item.location), ...program.accounts.map(item => item.location), ...program.securitySurface.cpiSites.map(item => item.location), ...program.securitySurface.pdaSites.map(item => item.location), ...(program.stateTypes ?? []).map(item => item.location), ...(program.sysvars ?? []).map(item => item.location), ...(program.runtimeOperations ?? []).map(item => item.location), ...(program.events ?? []).map(item => item.location), ...(program.errors ?? []).map(item => item.location), ...(program.instructionDossiers ?? []).map(item => item.location), ...(program.stateFlows ?? []).map(item => item.location)]; }

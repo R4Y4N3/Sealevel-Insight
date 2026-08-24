@@ -23,6 +23,6 @@ export function buildCapabilities(program: ProgramUnit, hasIdl = false): Capabil
   add('events', 'Emits events', (program.events ?? []).filter(item => item.emissionSites.length).flatMap(item => item.evidence));
   add('idl', 'Has IDL', hasIdl ? [{ description: 'IDL discovered and matched to source program' }] : []);
   add('identity-conflict', 'Has program identity conflicts', program.identity?.conflicts ?? []);
-  add('unresolved-calls', 'Has unresolved calls', (program.callGraph?.calls ?? []).filter(item => item.status !== 'resolved').flatMap(item => item.evidence));
+  add('unresolved-calls', 'Has unresolved calls', (program.callGraph?.calls ?? []).filter(item => item.status === 'unresolved' || item.status === 'dynamic' || item.status === 'ambiguous').flatMap(item => item.evidence));
   return items.sort((a, b) => a.id.localeCompare(b.id));
 }

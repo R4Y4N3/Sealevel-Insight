@@ -150,6 +150,8 @@ export interface AccountInfo {
   optional?: boolean;
   ownerExpectation?: string;
   addressExpectation?: string;
+  ownerValidated?: boolean;
+  addressValidated?: boolean;
   pdaId?: string;
   dataAccess?: Array<'read' | 'write'>;
   lamportAccess?: Array<'read' | 'write'>;
@@ -327,6 +329,11 @@ export interface SemanticCoverage {
   handlers?: CoverageRatio;
   accountRelationships?: CoverageRatio;
   calls?: CoverageRatio;
+  internalCalls?: CoverageRatio;
+  externalCalls?: CoverageRatio;
+  ambiguousCalls?: number;
+  dynamicCalls?: number;
+  unknownCalls?: number;
   reachableSurfaces?: CoverageRatio;
   programIds?: CoverageRatio;
   idlInstructions?: CoverageRatio;

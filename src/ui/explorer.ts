@@ -61,7 +61,11 @@ function instructionChildren(program: ProgramUnit, instruction: InstructionInfo)
   idsSection(`Sysvars (${surface?.sysvars?.length ?? 0})`, 'instruction-sysvars', program.name, surface?.sysvars)
 ]; }
 function idItems(accounts: AccountInfo[], ids: string[] | undefined, kind: string): Item[] { return accounts.filter(item => ids?.includes(item.id ?? '')).map(item => sourceOrText(`${item.name ?? item.type}${item.writable ? ' • writable' : ''}${item.signer ? ' • signer' : ''}`, kind, undefined, item.location)); }
-function coverageItems(report: WorkspaceReport): Item[] { return Object.entries(report.coverage ?? {}).filter((entry): entry is [string, { resolved: number; total: number; percent: number }] => !!entry[1] && typeof entry[1] === 'object' && 'resolved' in entry[1]).map(([name, value]) => new Item(`${human(name)}: ${value.resolved}/${value.total} (${(value.percent <= 1 ? value.percent * 100 : value.percent).toFixed(1)}%)`, vscode.TreeItemCollapsibleState.None, 'coverage-item')); }
+function coverageItems(report: WorkspaceReport): Item[] { return Object.entries(report.coverage ?? {}).flatMap(([name, value]) => {
+  if (value && typeof value === 'object' && 'resolved' in value) return [new Item(`${human(name)}: ${value.resolved}/${value.total} (${(value.percent <= 1 ? value.percent * 100 : value.percent).toFixed(1)}%)`, vscode.TreeItemCollapsibleState.None, 'coverage-item')];
+  if (typeof value === 'number') return [new Item(`${human(name)}: ${value}`, vscode.TreeItemCollapsibleState.None, 'coverage-item')];
+  return [];
+}); }
 function section(label: string, kind: string, expanded = false, programName?: string): Item { return new Item(label, expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed, kind, programName); }
 function idsSection(label: string, kind: string, programName: string, ids?: string[]): Item { const item = section(label, kind, false, programName); item.ids = ids; return item; }
 function sourceOrText(label: string, kind: string, programName?: string, location?: SourceLocation, tooltip?: string): Item { const item = location ? Item.source(label, kind, programName, location) : new Item(label, vscode.TreeItemCollapsibleState.None, kind, programName); item.tooltip = tooltip; return item; }

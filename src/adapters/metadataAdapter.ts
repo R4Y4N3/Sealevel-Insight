@@ -24,6 +24,14 @@ export function enrichMetadataFrameworks(root: RustNode, uri: string): { evidenc
   return { evidence, instructions, accounts };
 }
 
-function variantArguments(variant: RustNode): Array<{ name: string; type?: string }> { return descendants(variant, 'field_declaration').map(item => ({ name: nodeText(field(item, 'name')), type: nodeText(field(item, 'type')) })); }
+function variantArguments(variant: RustNode): Array<{ name: string; type?: string }> {
+  const named = descendants(variant, 'field_declaration').map(item => ({ name: nodeText(field(item, 'name')), type: nodeText(field(item, 'type')) })); if (named.length) return named;
+  const tuple = descendants(variant, 'ordered_field_declaration_list')[0];
+  return (tuple?.namedChildren ?? []).filter((item): item is RustNode => item !== null).map((item, index) => {
+    const type = item.text.trim();
+    const baseName = /(?:^|::)([A-Za-z_][A-Za-z0-9_]*)\s*(?:<.*>)?$/.exec(type)?.[1];
+    return { name: baseName ? baseName[0].toLowerCase() + baseName.slice(1) : `arg${index}`, type };
+  });
+}
 function attributesFor(node: RustNode): string { const values: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { values.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return values.join('\n'); }
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }

@@ -27,7 +27,7 @@ export function enrichAnchor(root: RustNode, uri: string): { instructions: Instr
       const constraints = parseConstraints(attributes, uri, fieldNode);
       const normalizedType = type.replace(/^\s*(?:Option\s*<\s*)?/, '').replace(/^\s*&\s*'?[A-Za-z0-9_]*\s*(?:mut\s+)?/, '').trim();
       const wrapperType = /^([A-Za-z_][A-Za-z0-9_:]*)/.exec(normalizedType)?.[1]?.split('::').at(-1);
-      const stateType = /^(?:Account|AccountLoader|InterfaceAccount)\s*</.test(normalizedType) ? genericArguments(normalizedType).at(-1)?.replace(/>+$/, '').trim() : undefined;
+      const stateType = /^(?:Account|BorshAccount|AccountLoader|InterfaceAccount)\s*</.test(normalizedType) ? genericArguments(normalizedType).at(-1)?.replace(/>+$/, '').trim() : undefined;
       const lifecycle: NonNullable<AccountInfo['lifecycle']> = [];
       if (has(constraints, 'init') || has(constraints, 'init_if_needed')) lifecycle.push('init', 'create', 'write');
       else if (has(constraints, 'mut')) lifecycle.push('write'); else lifecycle.push('read');
@@ -38,7 +38,7 @@ export function enrichAnchor(root: RustNode, uri: string): { instructions: Instr
         id: `account:${uri}:${fieldNode.startPosition.row + 1}:${name}`, name, type, wrapperType, stateType, contextType,
         signer: has(constraints, 'signer') || wrapperType === 'Signer', writable: has(constraints, 'mut') || has(constraints, 'init') || has(constraints, 'init_if_needed') || has(constraints, 'realloc') || has(constraints, 'close'),
         executable: has(constraints, 'executable') || wrapperType === 'Program' || wrapperType === 'Interface', raw: wrapperType === 'AccountInfo', unchecked: wrapperType === 'UncheckedAccount', optional: /^\s*Option\s*</.test(type),
-        ownerExpectation: valueOf(constraints, 'owner'), addressExpectation: valueOf(constraints, 'address'), constraints, lifecycle: [...new Set(lifecycle)],
+        ownerExpectation: valueOf(constraints, 'owner'), addressExpectation: valueOf(constraints, 'address') ?? (wrapperType === 'Program' ? stateType : undefined), ownerValidated: !!valueOf(constraints, 'owner') || !!stateType && ['Account', 'BorshAccount', 'AccountLoader', 'InterfaceAccount'].includes(wrapperType ?? ''), addressValidated: !!valueOf(constraints, 'address') || wrapperType === 'Program', constraints, lifecycle: [...new Set(lifecycle)],
         serialization: stateType ? ['anchor'] : [], location, confidence: 0.97, evidence: [{ description: '#[derive(Accounts)] field', location: loc(uri, struct) }]
       });
     }

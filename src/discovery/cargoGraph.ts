@@ -59,7 +59,7 @@ function makePackage(item: ParseResult, sources: Map<string, string[]>, workspac
   const rootUri = normalizePath(path.dirname(item.uri));
   const source = (sources.get(rootUri) ?? []).join('\n');
   const workspaceDependencies = object(object(workspace?.data.workspace).dependencies);
-  const dependencies = dependencyEntries(data).map(entry => makeDependency(entry.name, entry.value, entry.kind, entry.targetCondition, workspaceDependencies, item, diagnostics));
+  const dependencies = dependencyEntries(data).map(entry => makeDependency(entry.name, entry.value, entry.kind, entry.targetCondition, workspaceDependencies, item, diagnostics, !!workspace));
   const targets = cargoTargets(data, name, rootUri, item.fileUris ?? [], diagnostics, item.uri);
   const features: CargoFeature[] = Object.entries(object(data.features)).map(([feature, value]) => ({ name: feature, enables: strings(value), evidence: [{ description: `Cargo feature ${feature}` }] })).sort((a, b) => a.name.localeCompare(b.name));
   const evidence: Evidence[] = [];
@@ -108,11 +108,11 @@ function dependencyEntries(data: Toml): DependencyEntry[] {
 function sections(data: Toml, targetCondition?: string): DependencyEntry[] {
   return (['dependencies', 'dev-dependencies', 'build-dependencies'] as const).flatMap(section => Object.entries(object(data[section])).map(([name, value]) => ({ name, value, kind: section === 'dependencies' ? 'normal' as const : section === 'dev-dependencies' ? 'dev' as const : 'build' as const, targetCondition })));
 }
-function makeDependency(name: string, value: unknown, kind: CargoDependency['kind'], targetCondition: string | undefined, workspaceDependencies: Toml, manifest: ParseResult, diagnostics: AnalysisDiagnostic[]): CargoDependency {
+function makeDependency(name: string, value: unknown, kind: CargoDependency['kind'], targetCondition: string | undefined, workspaceDependencies: Toml, manifest: ParseResult, diagnostics: AnalysisDiagnostic[], containingWorkspace: boolean): CargoDependency {
   const original = object(value);
   const workspaceInherited = original.workspace === true;
   const inheritedValue = workspaceInherited ? workspaceDependencies[name] : undefined;
-  if (workspaceInherited && inheritedValue === undefined) diagnostics.push(diagnostic('cargo', 'warning', `Dependency ${name} uses workspace = true but is absent from [workspace.dependencies].`, manifest.uri, `workspace-dependency:${name}`));
+  if (workspaceInherited && inheritedValue === undefined) diagnostics.push(diagnostic('cargo', containingWorkspace ? 'warning' : 'info', containingWorkspace ? `Dependency ${name} uses workspace = true but is absent from [workspace.dependencies].` : `Workspace-inherited dependency ${name} could not be resolved because no containing workspace manifest was analyzed.`, manifest.uri, `workspace-dependency:${name}`));
   const inherited = object(inheritedValue);
   const spec = { ...inherited, ...original };
   delete spec.workspace;

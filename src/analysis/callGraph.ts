@@ -29,7 +29,9 @@ function resolveCall(expression: string, caller: RustSymbol | undefined, fileUri
   if (/\.|\)|\]|\}/.test(expression) && !/^(?:crate|self|super|Self)(?:::|$)/.test(expression)) return { status: 'dynamic', candidates: [], confidence: 0.4 };
   const module = caller?.module ?? index?.modulesByFile.get(fileUri) ?? 'crate';
   const imports = index?.imports.filter(item => item.fileUri === fileUri && item.module === module) ?? [];
+  const allSymbols = index?.symbols ?? symbols;
   const candidates = new Set<string>();
+  let classifiedExternal = false;
   const addExact = (name: string) => symbols.filter(symbol => symbol.qualifiedName === name).forEach(symbol => candidates.add(symbol.qualifiedName));
   const addSuffix = (suffix: string) => symbols.filter(symbol => symbol.qualifiedName.endsWith(`::${suffix}`) || symbol.qualifiedName === suffix).forEach(symbol => candidates.add(symbol.qualifiedName));
 
@@ -39,11 +41,18 @@ function resolveCall(expression: string, caller: RustSymbol | undefined, fileUri
     if (imported) addExact(`${imported.target}${expression.slice(first.length)}`);
     const normalized = normalizePathExpression(expression, module, caller);
     addExact(normalized);
-    if (!candidates.size && !/^(crate|self|super|Self)$/.test(first) && !symbols.some(symbol => symbol.module === `crate::${first}` || symbol.qualifiedName.startsWith(`crate::${first}::`))) return { status: 'external', candidates: [], confidence: 0.8 };
+    const localModule = localModuleTarget(expression.split('::')[0], module, allSymbols);
+    if (localModule) addThroughReexports(localModule, expression.split('::').slice(1).join('::'), allSymbols, index, candidates);
+    if (!candidates.size && !/^(crate|self|super|Self)$/.test(first) && !allSymbols.some(symbol => symbol.module === `crate::${first}` || symbol.qualifiedName.startsWith(`crate::${first}::`))) return { status: 'external', candidates: [], confidence: 0.8 };
   } else {
     addExact(`${module}::${expression}`);
-    for (const imported of imports.filter(item => !item.glob && item.alias === expression)) addExact(imported.target);
-    for (const imported of imports.filter(item => item.glob)) addExact(`${imported.target}::${expression}`);
+    for (const imported of imports.filter(item => !item.glob && item.alias === expression)) {
+      const local = localImportTarget(imported.target, imported.module, allSymbols); if (local) addExact(local); else classifiedExternal = true;
+    }
+    for (const imported of imports.filter(item => item.glob)) {
+      const local = localImportTarget(imported.target, imported.module, allSymbols);
+      if (local) addThroughReexports(local, expression, allSymbols, index, candidates); else classifiedExternal = true;
+    }
     if (!candidates.size) {
       const packageMatches = symbols.filter(symbol => symbol.shortName === expression);
       if (packageMatches.length === 1) candidates.add(packageMatches[0].qualifiedName);
@@ -57,7 +66,31 @@ function resolveCall(expression: string, caller: RustSymbol | undefined, fileUri
   const suffixes = [...candidates].sort();
   if (suffixes.length === 1) return { status: 'resolved', candidates: suffixes, target: suffixes[0], confidence: 0.7 };
   if (suffixes.length > 1) return { status: 'ambiguous', candidates: suffixes, confidence: 0.25 };
+  if (classifiedExternal || /^(?:Ok|Err|Some|None|Box|Vec|String|Result|Option|drop|log|msg|require|assert|assert_eq|assert_ne)$/.test(expression)) return { status: 'external', candidates: [], confidence: 0.82 };
   return { status: 'unresolved', candidates: [], confidence: 0.2 };
+}
+
+function localModuleTarget(target: string, ownerModule: string, symbols: RustSymbol[]): string | undefined {
+  if (target.startsWith('crate::')) return target;
+  const ownerRelative = `${ownerModule}::${target}`;
+  if (symbols.some(symbol => symbol.kind === 'module' && (symbol.qualifiedName === ownerRelative || symbol.qualifiedName.startsWith(`${ownerRelative}::`)))) return ownerRelative;
+  const root = `crate::${target}`;
+  return symbols.some(symbol => symbol.kind === 'module' && (symbol.qualifiedName === root || symbol.qualifiedName.startsWith(`${root}::`))) ? root : undefined;
+}
+
+function localImportTarget(target: string, ownerModule: string, symbols: RustSymbol[]): string | undefined {
+  if (target.startsWith('crate::')) return target;
+  return localModuleTarget(target, ownerModule, symbols) ?? (symbols.some(symbol => symbol.qualifiedName === target) ? target : undefined);
+}
+
+function addThroughReexports(module: string, tail: string, symbols: RustSymbol[], index: RustSymbolIndex | undefined, output: Set<string>, visited = new Set<string>()): void {
+  const key = `${module}:${tail}`; if (visited.has(key)) return; visited.add(key);
+  for (const symbol of symbols.filter(item => (item.kind === 'function' || item.kind === 'method') && item.qualifiedName === `${module}::${tail}`)) output.add(symbol.qualifiedName);
+  for (const imported of index?.imports.filter(item => item.module === module && item.public) ?? []) {
+    const local = localImportTarget(imported.target, module, symbols); if (!local) continue;
+    if (imported.glob) addThroughReexports(local, tail, symbols, index, output, visited);
+    else if (imported.alias === tail) for (const symbol of symbols.filter(item => (item.kind === 'function' || item.kind === 'method') && item.qualifiedName === local)) output.add(symbol.qualifiedName);
+  }
 }
 
 function normalizePathExpression(expression: string, module: string, caller?: RustSymbol): string {

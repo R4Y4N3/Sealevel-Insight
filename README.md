@@ -84,7 +84,7 @@ State models distinguish static from dynamic layouts and recognize Borsh, Pack, 
 
 Configured/common IDL locations are discovered without crawling all of `target`. Modern/legacy Anchor-compatible, Solana IDL, Quasar, and identifiable Codama/Shank forms normalize into a shared representation. Reconciliation compares program identity, instruction names/discriminators/arguments, account order and privileges, PDA metadata, state, events, and errors. `MATCHED`, `SOURCE_ONLY`, `IDL_ONLY`, `MISMATCH`, and `UNKNOWN` are analysis statuses—not vulnerabilities.
 
-Semantic Coverage always reports `resolved / total` for parsing, Cargo/program classification, handlers/contexts, account relationships, calls/reachability, CPI targets, PDA seeds, program IDs, and IDL records. Unresolved reasons remain visible.
+Semantic Coverage reports `resolved / total` for parsing, Cargo/program classification, handlers/contexts, account relationships, internal and external calls, reachability, CPI targets, PDA seeds, program IDs, and IDL records. Ambiguous, dynamic, and unknown calls are separate counts so framework/runtime calls do not dilute internal-call resolution. Unresolved reasons remain visible.
 
 ## Review Complexity
 
@@ -125,13 +125,13 @@ Source / metadata / Cargo / IDL
   → CLI, VS Code, JSON, Markdown and offline HTML
 ```
 
-Core analysis modules do not import `vscode`. Normal execution performs no network access. The opt-in developer command `npm run test:real-world` is the only workflow that clones external repositories; it checks exact commits from `test/real-world/projects.json` into an ignored cache.
+Core analysis modules do not import `vscode`. Normal execution performs no network access. The opt-in developer command `npm run test:real-world` is the only workflow that clones external repositories. It checks the 20-case QuickNode matrix against versioned expectations in `test/real-world/expectations`, then validates pinned Solana Foundation, Steel, and Shank/Codama targets in an ignored cache.
 
 ## Validation, limitations, and roadmap
 
 Run `npm run typecheck`, `npm test`, `npm run build`, `npm run package`, `npm run verify:vsix`, `npm run test:integration`, `npm run test:real-world`, `npm run benchmark`, `npm audit`, and `git diff --check` before release assessment.
 
-Static analysis cannot resolve arbitrary macros, conditional compilation, trait/dynamic dispatch, runtime-selected program IDs, or all custom serialization. Cross-package calls are conservative and require indexed source plus dependency/path evidence. Graph rendering is deliberately bounded. Steel/Quasar and metadata adapters are partial. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
+Static analysis cannot resolve arbitrary macros, conditional compilation, trait/dynamic dispatch, runtime-selected program IDs, or all custom serialization. Cross-package calls are conservative and require indexed source plus dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
 
 Marketplace publishing still requires the repository owner to confirm the real VS Code publisher account and provide screenshots. No publisher is invented, and this repository does not auto-publish.
 

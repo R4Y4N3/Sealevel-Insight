@@ -50,6 +50,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     programs.set(name, program);
   });
   const list = [...programs.values()];
+  for (const program of list) mergeInstructionEvidence(program);
   const symbolIndexes = new Map<string, RustSymbolIndex>();
   for (const program of list) {
     if (isCancelled()) throw new AnalysisCancelledError();
@@ -71,8 +72,9 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
       const calls = callGraph.calls.filter(call => call.caller === fn.qualifiedName);
       fn.directCalls = calls.map(call => call.id);
       fn.resolvedCalls = calls.filter(call => call.status === 'resolved').length;
-      fn.unresolvedCalls = calls.filter(call => call.status !== 'resolved').length;
+      fn.unresolvedCalls = calls.filter(call => call.status === 'unresolved' || call.status === 'ambiguous' || call.status === 'dynamic').length;
     }
+    linkFrameworkPdas(program);
     resolveInstructionAccounts(program);
     buildArchitecture(program);
     buildExternalPrograms(program);
@@ -133,6 +135,20 @@ function resolveCrossPackageCalls(programs: ProgramUnit[], indexes: Map<string, 
     graph.symbols = [...new Set(graph.symbols)].sort(); graph.edges = [...new Map(graph.edges.map(edge => [`${edge.source}:${edge.target}`, edge])).values()];
   }
 }
+
+function mergeInstructionEvidence(program: ProgramUnit): void {
+  const replacements = new Map<string, string>(); const merged: ProgramUnit['instructions'] = [];
+  for (const group of [...new Set(program.instructions.map(item => item.name))].map(name => program.instructions.filter(item => item.name === name))) {
+    const metadata = group.find(item => item.evidence.some(evidence => /ShankInstruction/.test(evidence.description)));
+    const dispatch = group.find(item => item.evidence.some(evidence => /dispatch match arm/.test(evidence.description)));
+    if (!metadata || !dispatch) { merged.push(...group); continue; }
+    const canonical = { ...dispatch, contextType: metadata.contextType, discriminator: metadata.discriminator ?? dispatch.discriminator, arguments: metadata.arguments?.length ? metadata.arguments : dispatch.arguments, confidence: Math.max(metadata.confidence, dispatch.confidence), evidence: [...metadata.evidence, ...dispatch.evidence] };
+    for (const item of group) replacements.set(item.id ?? item.name, canonical.id ?? canonical.name);
+    merged.push(canonical);
+  }
+  program.instructions = merged;
+  program.relationships = (program.relationships ?? []).map(item => ({ ...item, instructionId: replacements.get(item.instructionId) ?? item.instructionId }));
+}
 function normalizeCrateName(value: string): string { return value.replace(/-/g, '_'); }
 
 function extract(file: ParsedRustFile, program: ProgramUnit): void {
@@ -167,14 +183,23 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
   program.instructions.push(...steel.instructions, ...quasar.instructions);
   program.instructions.push(...metadata.instructions);
   program.accounts.push(...steel.accounts, ...quasar.accounts, ...metadata.accounts);
-    for (const account of anchor.accounts) {
+  if (quasarSource) for (const struct of descendants(root, 'struct_item')) {
+    const seedsBody = /#\[seeds\s*\(([\s\S]*?)\)\]/.exec(attributesBefore(struct))?.[1]; if (!seedsBody) continue;
+    const stateType = nodeText(field(struct, 'name')); const seeds = splitRustExpressions(seedsBody).map(item => item.replace(/\s*:\s*[A-Za-z_][A-Za-z0-9_:<>]*/g, '').trim()).filter(Boolean);
+    program.securitySurface.pdaSites.push({ id: `pda:quasar-template:${program.name}:${stateType}`, location: loc(uri, struct), derivationApi: `${stateType}::seeds`, seeds, evidence: [{ description: `Quasar #[seeds] template for ${stateType}`, location: loc(uri, struct) }], confidence: 0.92 });
+  }
+    for (const [framework, semanticAccounts, semanticInstructions] of [['Anchor', anchor.accounts, anchor.instructions], ['Quasar', quasar.accounts, quasar.instructions]] as const) for (const account of semanticAccounts) {
       const seeds = account.constraints?.filter(constraint => constraint.kind === 'seeds').flatMap(constraint => { const expression = constraint.expression ?? ''; return expression.startsWith('[') && expression.endsWith(']') ? splitRustExpressions(expression.slice(1, -1)) : [expression]; });
-      if (seeds?.length) program.securitySurface.pdaSites.push({ id: `pda:${account.id}`, location: account.location, seeds, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, enclosingInstruction: anchor.instructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: 'Anchor account seeds constraint', location: account.location }], confidence: 0.95 });
+      if (seeds?.length) { const id = `pda:${account.id}`; account.pdaId = id; program.securitySurface.pdaSites.push({ id, location: account.location, seeds, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, relatedAccountId: account.id, enclosingInstruction: semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: `${framework} account PDA constraint`, location: account.location }], confidence: 0.95 }); }
+      if (account.constraints?.some(constraint => constraint.kind === 'init')) {
+        const enclosingInstruction = semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name;
+        program.securitySurface.cpiSites.push({ id: `cpi:${framework.toLowerCase()}:init:${account.id}`, location: account.location, enclosingInstruction, invocationApi: `${framework} init account constraint`, instructionExpression: account.constraints.find(item => item.kind === 'init')?.expression, accountArguments: [account.name ?? account.type, account.constraints.find(item => item.kind === 'payer')?.expression ?? 'payer'], target: 'system-program', targetKind: 'system-program', pdaSigned: !!seeds?.length, signerPdaIds: seeds?.length ? [`pda:${account.id}`] : [], evidence: [{ description: `${framework} init constraint generates a System Program account-creation CPI`, location: account.location }], confidence: 0.94 });
+      }
       if (account.signer) program.securitySurface.signerSignals++;
       if (account.writable) program.securitySurface.writableSignals++;
       if (account.unchecked) program.securitySurface.rawOrUncheckedAccounts++;
     }
-  const anchorContexts = new Map(anchor.instructions.map(instruction => [instruction.contextType, instruction]));
+  const semanticContexts = new Map([...anchor.instructions, ...quasar.instructions].map(instruction => [instruction.contextType, instruction]));
   for (const fn of descendants(root, 'function_item')) {
     const name = nodeText(field(fn, 'name'));
     const children = fn.children.filter((child): child is RustNode => child !== null);
@@ -184,12 +209,11 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     const modifiers = children.find(child => child.type === 'function_modifiers')?.text ?? '';
     const metric: FunctionMetric = { name, qualifiedName: `${program.name}::${name}`, location: loc(uri, fn), lines: fn.endPosition.row - fn.startPosition.row + 1, codeLines: functionLines.codeLines, complexity: sourceComplexity(fn), parameters: descendants(fn, 'parameter').length, isPublic: visibility.startsWith('pub'), visibility, isUnsafe: modifiers.includes('unsafe'), isAsync: modifiers.includes('async'), returnType, unsafeBlocks: descendants(fn, 'unsafe_block').length };
     program.functions.push(metric);
-    if (fn.text.includes('process_instruction') || fn.text.includes('entrypoint!')) program.instructions.push({ id: `instruction:${uri}:${name}:${metric.location.startLine}`, name, handler: name, location: metric.location, confidence: 0.8, evidence: [{ description: 'native/custom entrypoint pattern', location: metric.location }], functionName: name });
     extractNativeParameters(fn, metric, program);
     extractSites(fn, metric, program, source, uri);
     if (metric.isUnsafe) program.securitySurface.unsafeFunctions++;
     const context = contextTypeFromFunction(fn.text);
-    const instruction = anchorContexts.get(context);
+    const instruction = semanticContexts.get(context);
     if (instruction && instruction.contextType) {
       instruction.contextType = context;
       for (const account of anchor.accounts.filter(account => account.contextType === context)) {
@@ -199,8 +223,15 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     }
   }
   enrichNativeAccountSemantics(root, uri, program);
-  for (const type of ['AccountInfo', 'AccountView', 'Signer', 'UncheckedAccount', 'Account<', 'InterfaceAccount', 'Program<', 'SystemAccount']) {
-    for (const index of indexesOf(source, type)) program.accounts.push({ id: `${uri}:account:${index}`, type, wrapperType: type.replace(/<.*$/, ''), raw: /AccountInfo|AccountView/.test(type), unchecked: /UncheckedAccount/.test(type), location: offsetLocation(uri, source, index, index + type.length), confidence: 0.7, evidence: [{ description: 'account-related type usage' }] });
+  for (const macro of descendants(root, 'macro_invocation')) {
+    const entrypoint = /(?:^|::)entrypoint!\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(macro.text)?.[1]; if (!entrypoint) continue;
+    const dispatched = program.instructions.some(item => item.handler && item.handler !== entrypoint && item.location.uri === uri);
+    if (dispatched || program.instructions.some(item => item.handler === entrypoint)) continue;
+    const fn = program.functions.find(item => item.name === entrypoint && item.location.uri === uri); if (!fn) continue;
+    program.instructions.push({ id: `instruction:${uri}:entrypoint:${entrypoint}:${fn.location.startLine}`, name: entrypoint, handler: entrypoint, functionName: entrypoint, location: fn.location, confidence: 0.92, evidence: [{ description: `explicit entrypoint! macro targets ${entrypoint}`, location: loc(uri, macro) }] });
+  }
+  if (!program.instructions.some(item => item.location.uri === uri)) for (const fn of program.functions.filter(item => item.location.uri === uri && item.name === 'process_instruction')) {
+    program.instructions.push({ id: `instruction:${uri}:entrypoint:${fn.name}:${fn.location.startLine}`, name: fn.name, handler: fn.name, functionName: fn.name, location: fn.location, confidence: 0.78, evidence: [{ description: 'conventional Solana process_instruction entrypoint', location: fn.location }] });
   }
   program.securitySurface.unsafeBlocks += descendants(root, 'unsafe_block').length;
   program.securitySurface.manualSerialization += (source.match(/try_from_slice|serialize|deserialize|borsh/g) ?? []).length;
@@ -212,6 +243,7 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
   const surface = program.securitySurface;
   const text = fn.text;
   const calls = descendants(fn, 'call_expression');
+  const bindings = new Map(descendants(fn, 'let_declaration').map(node => [(node.childForFieldName('pattern')?.text ?? '').replace(/^mut\s+/, '').trim(), node.childForFieldName('value')?.text ?? node.text.split('=').slice(1).join('=').replace(/;\s*$/, '').trim()] as const).filter(([name]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)));
   const addPda = (node: RustNode, api: string, evidence: string, confidence: number) => {
     const args = callArguments(node);
     const seedArgument = args[0]?.replace(/^&/, '').trim();
@@ -220,18 +252,33 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
   };
   const addCpi = (node: RustNode, api: string, signed: boolean, target?: string) => {
     const args = callArguments(node);
-    const kind = target ? targetKind(target) : inferTargetKind(api);
-    const resolvedTarget = target ?? targetForKind(kind);
-    surface.cpiSites.push({ id: `${uri}:cpi:${node.startPosition.row + 1}:${node.startPosition.column}`, location: loc(uri, node), functionName: metric.name, invocationApi: api, instructionExpression: args[0], accountArguments: args.slice(1), signerPdaIds: [], target: resolvedTarget, targetKind: kind, evidence: [{ description: `AST CPI call to ${api}`, location: loc(uri, node) }], pdaSigned: signed, confidence: resolvedTarget ? 0.95 : 0.8 });
+    const receiver = /^([A-Za-z_][A-Za-z0-9_]*)\./.exec(api)?.[1];
+    const instructionExpression = resolveBinding(args[0] ?? (receiver ? resolveBinding(receiver, bindings) : ''), bindings);
+    const inferred = inferCpiTarget(api, instructionExpression, fn.text);
+    const resolvedTarget = target ?? inferred.target ?? targetForKind(inferred.kind);
+    const cpiId = `${uri}:cpi:${node.startPosition.row + 1}:${node.startPosition.column}`;
+    const pushedAccounts = receiver ? calls.filter(item => (item.childForFieldName('function')?.text ?? '') === `${receiver}.push_account`).flatMap(callArguments) : [];
+    surface.cpiSites.push({ id: cpiId, location: loc(uri, node), functionName: metric.name, invocationApi: api, instructionExpression, accountArguments: pushedAccounts.length ? pushedAccounts : args.slice(1), programAccountExpression: inferred.programAccountExpression, signerPdaIds: [], target: resolvedTarget, targetKind: target ? targetKind(target) : inferred.kind, evidence: [{ description: `AST CPI call to ${api}`, location: loc(uri, node) }], pdaSigned: signed, confidence: resolvedTarget ? 0.95 : inferred.programAccountExpression ? 0.85 : 0.8 });
+    if (signed) {
+      const seeds = signerSeeds(api, args, bindings);
+      if (seeds.length) {
+        const existing = surface.pdaSites.find(item => item.enclosingFunction === metric.name);
+        const pdaId = existing?.id ?? `${uri}:pda:signer:${node.startPosition.row + 1}:${node.startPosition.column}`;
+        const bump = seeds.find(seed => /bump/i.test(seed));
+        if (existing) { existing.usedAsSigner = true; existing.relatedCpiIds = [...new Set([...(existing.relatedCpiIds ?? []), cpiId])]; existing.seeds ??= seeds; existing.bump ??= bump; existing.evidence.push({ description: `structured signer seeds passed to ${api}`, location: loc(uri, node) }); }
+        else surface.pdaSites.push({ id: pdaId, location: loc(uri, node), enclosingFunction: metric.name, derivationApi: `${api} signer seeds`, seeds, bump, programIdExpression: 'current program id', usedAsSigner: true, relatedCpiIds: [cpiId], evidence: [{ description: `structured signer seeds passed to ${api}`, location: loc(uri, node) }], confidence: 0.94 });
+        const cpi = surface.cpiSites.at(-1)!; cpi.signerPdaIds = [pdaId];
+      }
+    }
   };
   for (const call of calls) {
     const api = call.childForFieldName('function')?.text ?? '';
-    if (/find_program_address|create_program_address(?:_const)?/.test(api)) addPda(call, api, 'PDA derivation call', 0.95);
-    if (/invoke_signed|new_with_signer/.test(api)) addCpi(call, api, true);
-    else if (/^(?:.*::)?invoke$|CpiContext::new$|cpi::invoke$|\.invoke$/.test(api)) addCpi(call, api, false);
+    const baseApi = api.replace(/::<[^>]*>$/, '');
+    if (/find_program_address|create_program_address(?:_const)?/.test(baseApi)) addPda(call, api, 'PDA derivation call', 0.95);
+    if (/invoke_signed|new_with_signer/.test(baseApi)) addCpi(call, api, true);
+    else if (/^(?:.*::)?invoke$|CpiContext::new$|cpi::invoke$|\.invoke$/.test(baseApi)) addCpi(call, api, false);
     else if (isKnownCpiWrapper(api)) addCpi(call, api, false, targetForKind(inferTargetKind(api)));
   }
-  if (/seeds\s*=|signer_seeds/.test(fn.text)) surface.pdaSites.push({ id: `${uri}:pda:attribute:${metric.location.startLine}`, location: metric.location, enclosingFunction: metric.name, evidence: [{ description: 'Anchor or signer seed expression', location: metric.location }], confidence: 0.8 });
   const occurrence = (pattern: RegExp) => (text.match(pattern) ?? []).length;
   surface.signerSignals += occurrence(/is_signer/g);
   surface.writableSignals += occurrence(/is_writable/g);
@@ -249,6 +296,29 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
   const functionPdas = surface.pdaSites.filter(site => site.enclosingFunction === metric.name);
   if (functionCpis.length && functionPdas.length) for (const pda of functionPdas) { pda.usedAsSigner = true; pda.relatedCpiIds = functionCpis.map(site => site.id!).filter(Boolean); for (const cpi of functionCpis) cpi.signerPdaIds = [...new Set([...(cpi.signerPdaIds ?? []), pda.id!])]; }
   void source;
+}
+
+function resolveBinding(expression: string, bindings: Map<string, string>): string {
+  let value = expression.replace(/^&\s*/, '').trim(); const seen = new Set<string>();
+  while (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) && bindings.has(value) && !seen.has(value)) { seen.add(value); value = bindings.get(value)!.replace(/^&\s*/, '').trim(); }
+  return value || expression;
+}
+
+function signerSeeds(api: string, args: string[], bindings: Map<string, string>): string[] {
+  let expression = /invoke_signed/.test(api) && !/\.invoke_signed$/.test(api) ? args[2] ?? '' : args[0] ?? '';
+  expression = resolveBinding(expression, bindings).replace(/^&\s*/, '').trim();
+  if (expression.startsWith('[') && expression.endsWith(']')) { const outer = splitRustExpressions(expression.slice(1, -1)); if (outer.length === 1) expression = resolveBinding(outer[0], bindings).replace(/^&\s*/, '').trim(); }
+  const signer = /Signer::from\s*\(\s*&?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(expression)?.[1]; if (signer) expression = resolveBinding(signer, bindings);
+  if (!expression.startsWith('[') || !expression.endsWith(']')) return [];
+  return splitRustExpressions(expression.slice(1, -1)).map(seed => /^Seed::from\s*\(([\s\S]*)\)$/.exec(seed.trim())?.[1]?.trim() ?? seed.replace(/^&/, '').trim()).filter(Boolean);
+}
+
+function inferCpiTarget(api: string, instructionExpression: string, functionText: string): { kind: import('../model/report').ExternalProgramKind; target?: string; programAccountExpression?: string } {
+  const combined = `${api}\n${instructionExpression}`;
+  if (/solana_system_interface::instruction|pinocchio_system|\b(?:CreateAccount|Transfer|Assign|Allocate)\b/.test(combined)) return { kind: 'system-program', target: 'system-program' };
+  const known = inferTargetKind(combined); if (known !== 'unknown' && known !== 'dynamic') return { kind: known, target: targetForKind(known) };
+  const programExpression = (/CpiContext::new/.test(api) ? instructionExpression : undefined) ?? /CpiDynamic(?:::[^:]*)?::new\s*\(([\s\S]*)\)$/.exec(instructionExpression)?.[1]?.trim() ?? /Instruction::new(?:_with_borsh)?\s*\(\s*([^,]+)/.exec(instructionExpression)?.[1]?.trim() ?? /program_id\s*:\s*([^,}\n]+)/.exec(instructionExpression)?.[1]?.trim() ?? /(?:let\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*([A-Za-z_][A-Za-z0-9_.]*)\.cpi\s*\(/.exec(functionText)?.[1];
+  return programExpression ? { kind: 'custom', target: programExpression, programAccountExpression: programExpression } : { kind: 'dynamic' };
 }
 
 function targetKind(target: string): import('../model/report').ExternalProgramKind {
@@ -306,17 +376,17 @@ function propagateReachableSurface(program: ProgramUnit): void {
     }
     const sites = [...functions].map(name => byName.get(name)).filter((fn): fn is FunctionMetric => !!fn);
     const reachableCalls = graph.calls.filter(call => functions.has(call.caller));
-    const unresolvedCalls = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'external' || call.status === 'dynamic').map(call => call.id);
+    const unresolvedCalls = reachableCalls.filter(call => call.status === 'unresolved' || call.status === 'dynamic').map(call => call.id);
     const ambiguousCalls = reachableCalls.filter(call => call.status === 'ambiguous').map(call => call.id);
     const crossPackageFunctions = [...functions].filter(name => !byName.has(name) && reachableCalls.some(call => call.status === 'resolved' && call.target === name));
-    const reachableCpiSites = program.securitySurface.cpiSites.filter(site => sites.some(fn => fn.name === site.functionName));
+    const reachableCpiSites = program.securitySurface.cpiSites.filter(site => site.enclosingInstruction === instruction.name || sites.some(fn => fn.name === site.functionName));
     const cpis = reachableCpiSites.map(site => site.id ?? '');
-    const pdas = program.securitySurface.pdaSites.filter(site => sites.some(fn => fn.name === site.enclosingFunction)).map(site => site.id ?? '');
+    const pdas = program.securitySurface.pdaSites.filter(site => site.enclosingInstruction === instruction.name || sites.some(fn => fn.name === site.enclosingFunction)).map(site => site.id ?? '');
     const accountIds = program.relationships?.filter(rel => rel.instructionId === (instruction.id ?? instruction.name)).map(rel => rel.accountId) ?? [];
     const externalPrograms = reachableCpiSites.map(site => `external:${site.target ?? site.invocationApi ?? 'unknown'}`);
     for (const external of program.externalPrograms ?? []) if (externalPrograms.includes(external.id)) external.calledByInstructions = [...new Set([...external.calledByInstructions, instruction.id ?? instruction.name])].sort();
-    const incompleteReasons = [...(unresolvedCalls.length ? [`${unresolvedCalls.length} unresolved/external/dynamic calls`] : []), ...(ambiguousCalls.length ? [`${ambiguousCalls.length} ambiguous calls`] : []), ...(crossPackageFunctions.length ? [`${crossPackageFunctions.length} cross-package functions indexed but not merged into this program's semantic surface`] : [])];
-    instruction.reachableSurface = { directHandler: handler, functions: [...functions].sort(), unresolvedCalls, ambiguousCalls, complete: !incompleteReasons.length, incompleteReasons, directAccounts: [...new Set(accountIds)].sort(), accounts: [...new Set(accountIds)].sort(), directCpis: reachableCpiSites.filter(site => site.functionName === handlerName).map(site => site.id ?? ''), cpis: [...new Set(cpis)].sort(), signedCpis: reachableCpiSites.filter(site => site.pdaSigned).map(site => site.id ?? ''), dynamicCpis: reachableCpiSites.filter(site => site.targetKind === 'dynamic' || !site.target).map(site => site.id ?? ''), directPdas: program.securitySurface.pdaSites.filter(site => site.enclosingFunction === handlerName).map(site => site.id ?? ''), pdas: [...new Set(pdas)].sort(), externalPrograms: [...new Set(externalPrograms)].sort(), unsafeFunctions: sites.filter(fn => fn.isUnsafe).map(fn => fn.qualifiedName ?? fn.name), unsafeBlocks: sites.reduce((sum, fn) => sum + (fn.unsafeBlocks ?? 0), 0), reachableCyclomaticComplexity: sites.reduce((sum, fn) => sum + fn.complexity, 0) };
+    const incompleteReasons = [...(unresolvedCalls.length ? [`${unresolvedCalls.length} unknown/dynamic calls`] : []), ...(ambiguousCalls.length ? [`${ambiguousCalls.length} ambiguous calls`] : []), ...(crossPackageFunctions.length ? [`${crossPackageFunctions.length} cross-package functions indexed but not merged into this program's semantic surface`] : [])];
+    instruction.reachableSurface = { directHandler: handler, functions: [...functions].sort(), unresolvedCalls, ambiguousCalls, complete: !incompleteReasons.length, incompleteReasons, directAccounts: [...new Set(accountIds)].sort(), accounts: [...new Set(accountIds)].sort(), directCpis: reachableCpiSites.filter(site => site.functionName === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), cpis: [...new Set(cpis)].sort(), signedCpis: reachableCpiSites.filter(site => site.pdaSigned).map(site => site.id ?? ''), dynamicCpis: reachableCpiSites.filter(site => site.targetKind === 'dynamic' || !site.target).map(site => site.id ?? ''), directPdas: program.securitySurface.pdaSites.filter(site => site.enclosingFunction === handlerName || site.enclosingInstruction === instruction.name).map(site => site.id ?? ''), pdas: [...new Set(pdas)].sort(), externalPrograms: [...new Set(externalPrograms)].sort(), unsafeFunctions: sites.filter(fn => fn.isUnsafe).map(fn => fn.qualifiedName ?? fn.name), unsafeBlocks: sites.reduce((sum, fn) => sum + (fn.unsafeBlocks ?? 0), 0), reachableCyclomaticComplexity: sites.reduce((sum, fn) => sum + fn.complexity, 0) };
     for (const fn of sites) { fn.reachableFunctions = [...functions].sort(); fn.cpiCount = cpis.length; fn.pdaCount = pdas.length; }
   }
 }
@@ -332,8 +402,8 @@ function fileMetric(file: ParsedRustFile): FileMetric {
 }
 
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }
+function attributesBefore(node: RustNode): string { const values: string[] = []; let sibling = node.previousNamedSibling; while (sibling?.type === 'attribute_item') { values.unshift(sibling.text); sibling = sibling.previousNamedSibling; } return values.join('\n'); }
 function offsetLocation(uri: string, source: string, start: number, end: number) { const before = source.slice(0, start).split(/\r?\n/); const endLines = source.slice(0, end).split(/\r?\n/); return { uri, startLine: before.length, startColumn: before.at(-1)!.length, endLine: endLines.length, endColumn: endLines.at(-1)!.length }; }
-function indexesOf(source: string, value: string): number[] { const result: number[] = []; let index = source.indexOf(value); while (index >= 0) { result.push(index); index = source.indexOf(value, index + value.length); } return result; }
 function packageFromUri(uri: string): string { return uri.split('/').slice(-2, -1)[0] || 'workspace'; }
 function contextTypeFromFunction(source: string): string | undefined {
   const match = /Context\s*<([^>]*)/.exec(source);
@@ -348,11 +418,14 @@ function coverageFor(programs: ProgramUnit[], files: FileMetric[]) {
   const totalPdas = programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.length, 0);
   const ratio = (resolved: number, total: number) => ({ resolved, total, percent: total ? resolved / total : 1 });
   const calls = programs.flatMap(program => program.callGraph?.calls ?? []);
+  const internalResolvable = calls.filter(call => call.status === 'resolved' || call.status === 'ambiguous');
+  const external = calls.filter(call => call.status === 'external');
   const relationships = programs.flatMap(program => program.relationships ?? []);
   const accounts = programs.flatMap(program => program.accounts);
   const unresolvedReasons: Record<string, number> = {};
-  for (const call of calls.filter(item => item.status !== 'resolved')) unresolvedReasons[`${call.status ?? 'unresolved'} calls`] = (unresolvedReasons[`${call.status ?? 'unresolved'} calls`] ?? 0) + 1;
-  return { parsedFiles: ratio(files.filter(file => !file.parseError).length, files.length), cargoPackages: ratio(programs.filter(program => !!program.packageId).length, programs.length), programsClassified: ratio(programs.filter(program => program.packageKind && program.packageKind !== 'unknown').length, programs.length), instructions: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.confidence >= 0.7).length, 0), totalInstructions), handlers: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => !!item.handler || !!item.functionName).length, 0), totalInstructions), instructionContexts: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(instruction => !!instruction.contextType).length, 0), totalInstructions), accountRelationships: ratio(relationships.filter(item => accounts.some(account => account.id === item.accountId)).length, relationships.length), calls: ratio(calls.filter(call => call.status === 'resolved').length, calls.length), reachableSurfaces: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.reachableSurface?.complete).length, 0), totalInstructions), cpiTargets: ratio(programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.filter(site => !!site.target).length, 0), totalCpis), pdaSeeds: ratio(programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.filter(site => !!site.seeds?.length).length, 0), totalPdas), programIds: ratio(programs.filter(program => !!program.identity?.programId).length, programs.length), unresolvedReasons };
+  for (const call of calls.filter(item => item.status === 'ambiguous' || item.status === 'dynamic' || item.status === 'unresolved')) unresolvedReasons[`${call.status === 'unresolved' ? 'unknown' : call.status} calls`] = (unresolvedReasons[`${call.status === 'unresolved' ? 'unknown' : call.status} calls`] ?? 0) + 1;
+  const meaningfulInternal = ratio(internalResolvable.filter(call => call.status === 'resolved').length, internalResolvable.length);
+  return { parsedFiles: ratio(files.filter(file => !file.parseError).length, files.length), cargoPackages: ratio(programs.filter(program => !!program.packageId).length, programs.length), programsClassified: ratio(programs.filter(program => program.packageKind && program.packageKind !== 'unknown').length, programs.length), instructions: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.confidence >= 0.7).length, 0), totalInstructions), handlers: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => !!item.handler || !!item.functionName).length, 0), totalInstructions), instructionContexts: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(instruction => !!instruction.contextType).length, 0), totalInstructions), accountRelationships: ratio(relationships.filter(item => accounts.some(account => account.id === item.accountId)).length, relationships.length), calls: meaningfulInternal, internalCalls: meaningfulInternal, externalCalls: ratio(external.length, external.length), ambiguousCalls: calls.filter(call => call.status === 'ambiguous').length, dynamicCalls: calls.filter(call => call.status === 'dynamic').length, unknownCalls: calls.filter(call => call.status === 'unresolved').length, reachableSurfaces: ratio(programs.reduce((sum, program) => sum + program.instructions.filter(item => item.reachableSurface?.complete).length, 0), totalInstructions), cpiTargets: ratio(programs.reduce((sum, program) => sum + program.securitySurface.cpiSites.filter(site => !!site.target).length, 0), totalCpis), pdaSeeds: ratio(programs.reduce((sum, program) => sum + program.securitySurface.pdaSites.filter(site => !!site.seeds?.length).length, 0), totalPdas), programIds: ratio(programs.filter(program => !!program.identity?.programId).length, programs.length), unresolvedReasons };
 }
 
 function dedupeEvidence(items: import('../model/report').FrameworkEvidence[]): import('../model/report').FrameworkEvidence[] {
@@ -431,7 +504,7 @@ function buildExternalPrograms(program: ProgramUnit): void {
   for (const cpi of program.securitySurface.cpiSites) {
     const name = cpi.target ?? cpi.invocationApi ?? 'unknown';
     const id = `external:${name}`;
-    const instruction = program.instructions.find(item => item.functionName === cpi.functionName || item.handler === cpi.functionName);
+    const instruction = program.instructions.find(item => item.name === cpi.enclosingInstruction || item.functionName === cpi.functionName || item.handler === cpi.functionName);
     const instructionId = instruction?.id ?? instruction?.name;
     const existing = grouped.get(id) ?? { id, name, programId: cpi.targetProgramId, kind: cpi.targetKind ?? 'unknown', locations: [], calledByInstructions: [], cpiCount: 0, signedCpiCount: 0, confidence: cpi.confidence, evidence: [], cpiSiteIds: [] };
     existing.locations.push(cpi.location);
@@ -449,13 +522,31 @@ function buildExternalPrograms(program: ProgramUnit): void {
 function resolveInstructionAccounts(program: ProgramUnit): void {
   program.relationships ??= [];
   for (const instruction of program.instructions) {
-    if (!instruction.contextType) continue;
-    for (const account of program.accounts.filter(item => item.contextType === instruction.contextType)) {
+    const handler = instruction.handler ?? instruction.functionName;
+    const related = instruction.contextType ? program.accounts.filter(item => item.contextType === instruction.contextType) : handler ? program.accounts.filter(item => item.id?.includes(`:${handler}:`)) : [];
+    for (const account of related) {
       if (!account.id) account.id = `account:${program.name}:${account.location.uri}:${account.location.startLine}:${account.name ?? account.type}`;
       program.relationships.push({ instructionId: instruction.id ?? instruction.name, accountId: account.id, relationship: account.signer ? 'signer' : account.writable ? 'writes' : account.unchecked || account.raw ? 'unchecked' : 'reads' });
     }
   }
   program.relationships = [...new Map(program.relationships.map(item => [`${item.instructionId}:${item.accountId}:${item.relationship}`, item])).values()];
+}
+
+function linkFrameworkPdas(program: ProgramUnit): void {
+  for (const pda of program.securitySurface.pdaSites.filter(item => item.relatedAccountId && !item.enclosingInstruction)) {
+    const account = program.accounts.find(item => item.id === pda.relatedAccountId); pda.enclosingInstruction = program.instructions.find(item => item.contextType === account?.contextType)?.name;
+  }
+  for (const cpi of program.securitySurface.cpiSites.filter(item => item.id?.includes(':init:') && !item.enclosingInstruction)) {
+    const account = program.accounts.find(item => item.id && cpi.id?.endsWith(item.id)); if (account) cpi.enclosingInstruction = program.instructions.find(item => item.contextType === account.contextType)?.name;
+  }
+  for (const pda of program.securitySurface.pdaSites.filter(item => item.id?.includes(':quasar-template:'))) {
+    const stateType = pda.derivationApi?.replace(/::seeds$/, ''); if (!stateType) continue;
+    const account = program.accounts.find(item => item.stateType === stateType && item.addressExpectation?.includes(`${stateType}::seeds`)); if (!account?.id) continue;
+    pda.relatedAccountId = account.id; account.pdaId = pda.id;
+    pda.enclosingInstruction = program.instructions.find(item => item.contextType === account.contextType)?.name;
+    const initCpi = program.securitySurface.cpiSites.find(item => item.id?.includes(':init:') && item.id.endsWith(account.id!));
+    if (initCpi) { initCpi.pdaSigned = true; initCpi.signerPdaIds = [pda.id!]; pda.usedAsSigner = true; pda.relatedCpiIds = [initCpi.id!]; }
+  }
 }
 
 function linkReachableSemantics(program: ProgramUnit): void {

@@ -72,7 +72,7 @@ function compareAccounts(instruction: string, source: ProgramUnit['accounts'], i
   if (source.length !== idl.length) output.push({ status: 'MISMATCH', item: `instruction:${instruction}.accounts`, details: `source count=${source.length}, IDL count=${idl.length}` });
   for (let index = 0; index < Math.min(source.length, idl.length); index++) {
     const actual = source[index], expected = idl[index]; const prefix = `instruction:${instruction}.account:${expected.name}`;
-    if (actual.name !== expected.name) output.push({ status: 'MISMATCH', item: `${prefix}.order`, details: `source account ${index}=${actual.name}, IDL account ${index}=${expected.name}` });
+    if (normalizeName(actual.name ?? '') !== normalizeName(expected.name)) output.push({ status: 'MISMATCH', item: `${prefix}.order`, details: `source account ${index}=${actual.name}, IDL account ${index}=${expected.name}` });
     for (const [key, sourceValue, idlValue] of [['signer', !!actual.signer, !!expected.signer], ['writable', !!actual.writable, !!expected.writable], ['optional', !!actual.optional, !!expected.optional]] as const) if (sourceValue !== idlValue) output.push({ status: 'MISMATCH', item: `${prefix}.${key}`, details: `source ${key}=${sourceValue}, IDL ${key}=${idlValue}` });
     const sourcePda = !!actual.constraints?.some(item => item.kind === 'seeds'); if (expected.pda !== undefined && sourcePda !== !!expected.pda) output.push({ status: 'MISMATCH', item: `${prefix}.pda`, details: `source PDA=${sourcePda}, IDL PDA=${!!expected.pda}` });
   }
@@ -83,5 +83,5 @@ function records(value: unknown): Record<string, unknown>[] { return Array.isArr
 function object(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
 function number(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
-function normalizeType(value: unknown): string | undefined { if (value === undefined) return undefined; return typeof value === 'string' ? value.replace(/\s+/g, '') : JSON.stringify(value); }
+function normalizeType(value: unknown): string | undefined { if (value === undefined) return undefined; if (typeof value === 'string') return value.replace(/\s+/g, ''); const defined = object(value).defined; if (typeof defined === 'string') return defined.replace(/\s+/g, ''); return JSON.stringify(value); }
 function normalizeName(value: string): string { return value.replace(/[-_]/g, '').toLowerCase(); }

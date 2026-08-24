@@ -8,7 +8,7 @@
 - Deepened Anchor, native Rust, Pinocchio, Steel, and Quasar enrichment; added Codama/Shank metadata enrichment and source/IDL reconciliation.
 - Added full CLI commands/options/policy exit codes, deterministic local caches, baselines/diffs, scope configuration, duplicate hashing, and standalone offline HTML graph modes.
 - Expanded VS Code commands, Explorer hierarchy, semantic CodeLens/hovers, diagnostics, cancellation, debounced auto-analysis, bounded concurrency, and persisted cache/report behavior.
-- Added strict report-schema validation, 52 deterministic tests, packaged CLI/Extension Host integration, pinned five-framework real-world validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
+- Added strict report-schema validation, 65 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
 - Fixed packaged CommonJS parser initialization, root-level VS Code source discovery, workspace-relative test exclusion, scopefile merging, lexical marker counting, and percentage-policy/report rendering errors.
 
 ## 0.5.0

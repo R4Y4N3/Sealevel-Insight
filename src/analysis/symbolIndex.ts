@@ -94,8 +94,11 @@ function parseUse(node: RustNode, fileUri: string, module: string): ImportBindin
 }
 
 function expandUse(expression: string): Array<{ alias: string; target: string; glob: boolean }> {
-  const brace = /^(.*)::\{(.*)\}$/.exec(expression);
-  if (brace) return splitTopLevel(brace[2]).flatMap(part => expandUse(`${brace[1]}::${part.trim()}`));
+  const open = expression.indexOf('{');
+  if (open >= 0 && expression.endsWith('}')) {
+    const prefix = expression.slice(0, open).replace(/::$/, ''); const body = expression.slice(open + 1, -1);
+    return splitTopLevel(body).flatMap(part => expandUse(prefix ? `${prefix}::${part.trim()}` : part.trim()));
+  }
   if (expression.endsWith('::*')) return [{ alias: '*', target: expression.slice(0, -3), glob: true }];
   const alias = /^(.*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/.exec(expression);
   const target = (alias?.[1] ?? expression).replace(/::self$/, '');

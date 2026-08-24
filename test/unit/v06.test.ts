@@ -103,8 +103,8 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   });
 
   it('renders semantic coverage as a real percentage in Markdown', async () => {
-    const report = await sampleReport('pub fn handler() {}'); report.coverage!.parsedFiles = { resolved: 4, total: 5, percent: 80 };
-    const markdown = markdownReport(report); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.doesNotMatch(markdown, /8000\.0%/);
+    const report = await sampleReport('pub fn handler() {}'); report.coverage!.parsedFiles = { resolved: 4, total: 5, percent: 80 }; report.coverage!.unknownCalls = 2;
+    const markdown = markdownReport(report); assert.match(markdown, /Parsed Files \| 4 \| 5 \| 80\.0%/); assert.match(markdown, /Unknown Calls 2/); assert.doesNotMatch(markdown, /8000\.0%/);
   });
 
   it('resolves external modules declared through a Rust path attribute', async () => {
@@ -130,6 +130,76 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(call?.status, 'resolved'); assert.equal(call?.target, 'state-lib::validate');
     const surface = report.programs.find(item => item.name === 'client')?.instructions.find(item => item.name === 'run')?.reachableSurface;
     assert.equal(surface?.complete, false); assert.match(surface?.incompleteReasons?.join('\n') ?? '', /cross-package functions indexed but not merged/);
+  });
+
+  it('links Quasar constraints and structured PDA templates across modules', async () => {
+    const report = await analyzeSources([
+      { uri: 'file:///q/src/lib.rs', source: 'use quasar_lang::prelude::*; mod accounts; mod state; #[program] mod p { pub fn create(ctx: Ctx<Create>) { accounts::handle(&mut ctx.accounts); } }', packageName: 'q', packageRoot: '/q' },
+      { uri: 'file:///q/src/accounts.rs', source: 'use quasar_lang::prelude::*; #[derive(Accounts)] struct Create { #[account(mut)] payer: Signer, #[account(mut, init, address = Vault::seeds(payer.address()))] vault: Account<Vault> } pub fn handle(_: &mut Create) {}', packageName: 'q', packageRoot: '/q' },
+      { uri: 'file:///q/src/state.rs', source: 'use quasar_lang::prelude::*; #[account] #[seeds(b"vault", payer: Address)] struct Vault { value: u64 }', packageName: 'q', packageRoot: '/q' }
+    ], wasm);
+    const program = report.programs[0]; const vault = program.accounts.find(item => item.name === 'vault');
+    assert.equal(vault?.writable, true); assert.equal(vault?.pdaId, program.securitySurface.pdaSites[0].id);
+    assert.deepEqual(program.securitySurface.pdaSites[0].seeds, ['b"vault"', 'payer']); assert.equal(program.instructions[0].reachableSurface?.accounts.length, 2);
+  });
+
+  it('does not create semantic accounts from bare account type references', async () => {
+    const report = await sampleReport('fn helper(_: AccountInfo, _: AccountView) {}');
+    assert.equal(report.programs[0].accounts.length, 0);
+  });
+
+  it('extracts only real native dispatch arms and resolves their handlers', async () => {
+    const report = await sampleReport('fn process_instruction(accounts: &[AccountView], data: &[u8]) { match data.split_first() { Some((&IX_CREATE, rest)) => create(accounts, rest), _ => Err(Error) } } fn create(accounts: &[AccountView], data: &[u8]) { match parse(data) { Ok(Some(value)) => use_value(value), _ => Err(Error) }; }');
+    assert.deepEqual(report.programs[0].instructions.map(item => [item.name, item.handler]), [['create', 'create']]);
+  });
+
+  it('requires evidence for native signer and writable account flags', async () => {
+    const report = await sampleReport('fn process_instruction(accounts: &[AccountView]) { let [authority, vault, program] = accounts else { return }; if !authority.is_signer() { return } if !vault.owned_by(program.address()) { return } vault.resize(9); if program.address() != &ID { return } }');
+    const accounts = report.programs[0].accounts;
+    assert.equal(accounts.find(item => item.name === 'authority')?.signer, true);
+    assert.equal(accounts.find(item => item.name === 'vault')?.writable, true); assert.equal(accounts.find(item => item.name === 'vault')?.ownerValidated, true);
+    assert.equal(accounts.find(item => item.name === 'program')?.addressValidated, true);
+  });
+
+  it('preserves nested signer seeds and classifies nested system CPI instructions', async () => {
+    const report = await sampleReport('fn create(accounts: &[AccountInfo], program_id: &Pubkey) { invoke_signed(&solana_system_interface::instruction::create_account(payer.key, vault.key, 1, 8, program_id), accounts, &[&[b"vault", authority.key.as_ref(), &[bump]]]); }');
+    const program = report.programs[0]; assert.equal(program.securitySurface.cpiSites[0].targetKind, 'system-program');
+    assert.deepEqual(program.securitySurface.pdaSites[0].seeds, ['b"vault"', 'authority.key.as_ref()', '[bump]']); assert.equal(program.securitySurface.cpiSites[0].signerPdaIds?.length, 1);
+  });
+
+  it('resolves Pinocchio Signer seed variables and turbofish CPI calls', async () => {
+    const report = await sampleReport('fn pull(accounts: &[AccountView]) { let [vault, target] = accounts else { return }; let seeds = [Seed::from(b"vault"), Seed::from(vault.address().as_ref()), Seed::from(bump_bytes)]; let signer = Signer::from(&seeds); let ix = InstructionView { program_id: target.address(), accounts: &[], data: &[] }; invoke::<1>(&ix, &[vault]); CreateAccount { from: vault, to: target, owner: target.address() }.invoke_signed(&[signer]); }');
+    const program = report.programs[0]; assert.equal(program.securitySurface.cpiSites.some(item => item.programAccountExpression === 'target.address()'), true);
+    assert.deepEqual(program.securitySurface.pdaSites[0].seeds, ['b"vault"', 'vault.address().as_ref()', 'bump_bytes']);
+  });
+
+  it('categorizes internal, external, dynamic, and unknown call coverage separately', async () => {
+    const report = await sampleReport('use external_crate::helper; fn local() {} fn run(value: Thing) { local(); helper(); drop(value); value.method(); missing(); }');
+    assert.deepEqual(report.coverage?.internalCalls, { resolved: 1, total: 1, percent: 1 });
+    assert.deepEqual(report.coverage?.externalCalls, { resolved: 2, total: 2, percent: 1 });
+    assert.equal(report.coverage?.dynamicCalls, 1); assert.equal(report.coverage?.unknownCalls, 1);
+  });
+
+  it('does not mark instruction reachability incomplete for classified external calls', async () => {
+    const report = await sampleReport('#[program] mod p { pub fn run() { external_crate::helper(); } }');
+    assert.equal(report.programs[0].instructions[0].reachableSurface?.complete, true);
+    assert.deepEqual(report.programs[0].instructions[0].reachableSurface?.unresolvedCalls, []);
+  });
+
+  it('treats absent parent workspace metadata as informational scope context', () => {
+    const graph = buildCargoGraph([{ uri: '/repo/member/Cargo.toml', text: '[package]\nname="member"\n[dependencies]\nsolana-program.workspace=true' }], new Map());
+    assert.equal(graph.diagnostics[0].severity, 'info'); assert.match(graph.diagnostics[0].message, /no containing workspace manifest/);
+  });
+
+  it('models explicit resize and state-write operations', async () => {
+    const report = await sampleReport('fn update(account: &AccountView) { account.resize(64); account.set_inner(State { value: 1 }); }');
+    assert.deepEqual(report.programs[0].runtimeOperations?.map(item => item.kind), ['realloc', 'state-write']);
+  });
+
+  it('extracts Shank tuple-variant arguments for source and IDL reconciliation', async () => {
+    const report = await sampleReport('#[derive(ShankInstruction)] enum Instruction { AddCar(AddCarArgs), #[account(0, writable, name="vault")] Reset } struct AddCarArgs { value: u64 }');
+    const instruction = report.programs[0].instructions.find(item => item.name === 'AddCar');
+    assert.deepEqual(instruction?.arguments, [{ name: 'addCarArgs', type: 'AddCarArgs' }]);
   });
 });
 

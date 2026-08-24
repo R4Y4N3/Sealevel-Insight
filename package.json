@@ -208,7 +208,7 @@
     "cli": "node dist/cli.js",
     "build:integration": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run package && npm run verify:vsix && npm run build:integration && node dist-integration/test/integration/runTest.js",
-    "test:real-world": "node scripts/real-world-smoke.js",
+    "test:real-world": "npm run build && node scripts/real-world-smoke.js",
     "benchmark": "npm run build && node scripts/benchmark.js"
   },
   "devDependencies": {

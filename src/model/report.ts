@@ -471,6 +471,7 @@ export interface InstructionDossier {
   accounts: InstructionAccountDossier[];
   cpis: InstructionCpiDossier[];
   pdas: InstructionPdaDossier[];
+  assetFlows: TokenAssetFlow[];
   stateAccesses: InstructionStateAccess[];
   stateTypeIds: string[];
   externalProgramIds: string[];
@@ -494,6 +495,65 @@ export interface InstructionDossier {
 }
 
 export type StateFlowOperation = 'read' | 'write' | 'init' | 'create' | 'realloc' | 'close' | 'lamport-transfer' | 'unknown';
+
+/** How the authority behind a token operation was established from source evidence. */
+export type TokenAssetAuthorityType = 'signer-account' | 'pda' | 'ordinary-account' | 'unresolved';
+
+/** Which token program a flow targets, when source evidence proves it. */
+export type TokenProgramKind = 'spl-token' | 'token-2022' | 'associated-token';
+
+/** One semantic role of a token operation, kept unresolved until positively bound. */
+export interface TokenAssetFlowBinding {
+  /** Bound instruction account ID, only present when the role resolved. */
+  accountId?: string;
+  accountName?: string;
+  /** Raw source expression for this role, always preserved. */
+  expression: string;
+  resolved: boolean;
+}
+
+/**
+ * An evidenced token/asset movement attached to an instruction. Framework-neutral:
+ * adapters establish the evidence, but the record never exposes framework specifics.
+ */
+export interface TokenAssetFlow {
+  id: string;
+  instructionId: string;
+  program: string;
+  cpiId?: string;
+  direct: boolean;
+  operation?: string;
+  operationCategory?: CpiOperationCategory;
+  tokenProgram?: TokenProgramKind;
+  source?: TokenAssetFlowBinding;
+  destination?: TokenAssetFlowBinding;
+  mint?: TokenAssetFlowBinding;
+  authority?: TokenAssetFlowBinding;
+  authorityType?: TokenAssetAuthorityType;
+  delegate?: TokenAssetFlowBinding;
+  newAuthority?: TokenAssetFlowBinding;
+  amount?: string;
+  decimals?: string;
+  pdaSigned: boolean;
+  signerPdaIds: string[];
+  functionPath: string[];
+  callPath: string[];
+  location: SourceLocation;
+  confidence: number;
+  evidence: Evidence[];
+  complete: boolean;
+  unresolvedReasons: string[];
+}
+
+/** Deterministic aggregate over a set of asset flows (manifest scope / per-program). */
+export interface AssetFlowSummary {
+  total: number;
+  instructionsWithFlows: number;
+  byCategory: Record<string, number>;
+  splTokenPrograms: number;
+  token2022Programs: number;
+}
+
 export interface StateFlow {
   id: string;
   instructionId: string;
@@ -517,7 +577,7 @@ export interface StateFlow {
 export interface AuditManifest {
   formatVersion: 1;
   analysisMode: 'local-offline-deterministic';
-  scope: { programs: number; packages: number; sourceFiles: number; instructions: number; dossiers: number; stateFlows: number };
+  scope: { programs: number; packages: number; sourceFiles: number; instructions: number; dossiers: number; stateFlows: number; assetFlows?: number; instructionsWithAssetFlows?: number; splTokenPrograms?: number; token2022Programs?: number; assetFlowCategories?: Record<string, number> };
   programs: Array<{
     program: string;
     packageId?: string;
@@ -623,6 +683,7 @@ export interface ProgramUnit {
   reviewComplexity?: ReviewComplexity;
   instructionDossiers?: InstructionDossier[];
   stateFlows?: StateFlow[];
+  assetFlows?: TokenAssetFlow[];
   stateAccessSites?: StateAccessSite[];
   conditionalCompilation?: { featureKnowledge: 'cargo-metadata' | 'unknown'; enabledFeatures: string[]; inactiveItems: number; unknownItems: number; unknownPredicates: string[]; evidence: Evidence[] };
 }
@@ -658,6 +719,10 @@ export interface WorkspaceReport {
     cpis: number;
     pdaSignedCpis: number;
     unsafeBlocks: number;
+    tokenFlows?: number;
+    tokenTransfers?: number;
+    tokenMints?: number;
+    tokenBurns?: number;
   };
 }
 

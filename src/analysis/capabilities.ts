@@ -11,6 +11,14 @@ export function buildCapabilities(program: ProgramUnit, hasIdl = false): Capabil
   add('signed-cpi', 'Uses signed CPIs', cpis.filter(item => item.pdaSigned).flatMap(item => item.evidence));
   add('dynamic-cpi', 'Uses dynamic CPIs', cpis.filter(item => item.targetKind === 'dynamic' || !item.target).flatMap(item => item.evidence));
   for (const [kind, label] of [['system-program', 'Uses System Program'], ['spl-token', 'Uses SPL Token'], ['token-2022', 'Uses Token-2022'], ['associated-token', 'Uses Associated Token Program'], ['memo', 'Uses Memo Program']] as const) add(kind, label, cpis.filter(item => item.targetKind === kind).flatMap(item => item.evidence));
+  const flows = program.assetFlows ?? [];
+  add('transfers-tokens', 'Transfers tokens', flows.filter(item => item.operationCategory === 'token-transfer').flatMap(item => item.evidence));
+  add('mints-tokens', 'Mints tokens', flows.filter(item => item.operationCategory === 'token-mint').flatMap(item => item.evidence));
+  add('burns-tokens', 'Burns tokens', flows.filter(item => item.operationCategory === 'token-burn').flatMap(item => item.evidence));
+  add('changes-token-authorities', 'Changes token authorities', flows.filter(item => item.operationCategory === 'authority-change' && (item.operation?.includes('set-authority') || item.operation?.includes('approve') || item.operation?.includes('revoke'))).flatMap(item => item.evidence));
+  add('freezes-thaws-token-accounts', 'Freezes or thaws token accounts', flows.filter(item => item.operationCategory === 'freeze' || item.operationCategory === 'thaw').flatMap(item => item.evidence));
+  add('creates-token-accounts', 'Creates token accounts', [...flows.filter(item => item.operationCategory === 'token-account-create'), ...cpis.filter(item => item.operationCategory === 'token-account-create')].flatMap(item => item.evidence));
+  add('pda-token-authority', 'Uses PDA token authority', flows.filter(item => item.authorityType === 'pda').flatMap(item => item.evidence));
   add('sysvars', 'Uses sysvars', (program.sysvars ?? []).flatMap(item => item.evidence));
   add('instructions-sysvar', 'Uses Instructions sysvar', (program.sysvars ?? []).filter(item => item.name === 'Instructions').flatMap(item => item.evidence));
   add('remaining-accounts', 'Uses remaining_accounts', program.securitySurface.remainingAccounts ? [{ description: `${program.securitySurface.remainingAccounts} remaining_accounts references` }] : []);

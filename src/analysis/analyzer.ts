@@ -24,6 +24,8 @@ import { refreshAuditProducts } from './auditProducts';
 import { analyzeConditionalCompilation, CfgFileAnalysis } from './cfg';
 import { attachReachabilityWitnesses } from './reachabilityWitness';
 import { enrichStateDataflow } from './stateDataflow';
+import { buildAssetFlows } from './tokenFlow';
+import { SCHEMA_VERSION, TOOL_VERSION } from '../core/version';
 
 export interface RustSourceInput { uri: string; source: string; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
 export interface AnalysisOptions { compilationProfile?: CompilationProfile; }
@@ -97,14 +99,17 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
   }
   propagateCrossPackageSurfaces(list);
   attachReachabilityWitnesses(list);
+  buildAssetFlows(list);
   for (const program of list) {
     program.reviewHotspots = applyReviewComplexity(program);
     program.capabilities = buildCapabilities(program);
   }
   const allSurface = list.map(program => program.securitySurface);
   const reviewProfile = list.flatMap(program => program.reviewHotspots ?? []).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+  const allFlows = list.flatMap(program => program.assetFlows ?? []);
+  const flowCategory = (category: string) => allFlows.filter(flow => flow.operationCategory === category).length;
   const report: WorkspaceReport = {
-    schemaVersion: '0.6.0', tool: { name: 'Sealevel Insight', version: '0.6.0' },
+    schemaVersion: SCHEMA_VERSION, tool: { name: 'Sealevel Insight', version: TOOL_VERSION },
     generatedAt: new Date().toISOString(),
     compilationProfile,
     programs: list,
@@ -118,7 +123,8 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
       rustFiles: files.length, loc: sum(files, 'lines'), codeLoc: sum(files, 'codeLines'), blankLines: sum(files, 'blankLines'), commentLines: sum(files, 'commentLines'),
       functions: list.reduce((n, p) => n + p.functions.length, 0), instructions: list.reduce((n, p) => n + p.instructions.length, 0), accounts: list.reduce((n, p) => n + p.accounts.length, 0),
       signerSignals: sumSurface(allSurface, 'signerSignals'), writableSignals: sumSurface(allSurface, 'writableSignals'), rawOrUncheckedAccounts: sumSurface(allSurface, 'rawOrUncheckedAccounts'),
-      pdas: sumSurface(allSurface, 'pdaSites', true), cpis: sumSurface(allSurface, 'cpiSites', true), pdaSignedCpis: allSurface.reduce((n, s) => n + s.cpiSites.filter(cpi => cpi.pdaSigned).length, 0), unsafeBlocks: sumSurface(allSurface, 'unsafeBlocks')
+      pdas: sumSurface(allSurface, 'pdaSites', true), cpis: sumSurface(allSurface, 'cpiSites', true), pdaSignedCpis: allSurface.reduce((n, s) => n + s.cpiSites.filter(cpi => cpi.pdaSigned).length, 0), unsafeBlocks: sumSurface(allSurface, 'unsafeBlocks'),
+      tokenFlows: allFlows.length, tokenTransfers: flowCategory('token-transfer'), tokenMints: flowCategory('token-mint'), tokenBurns: flowCategory('token-burn')
     }
   };
   refreshAuditProducts(report);
@@ -238,6 +244,7 @@ function extract(file: ParsedRustFile, program: ProgramUnit): void {
     for (const [framework, semanticAccounts, semanticInstructions] of [['Anchor', anchor.accounts, anchor.instructions], ['Quasar', quasar.accounts, quasar.instructions]] as const) for (const account of semanticAccounts) {
       const seeds = account.constraints?.filter(constraint => constraint.kind === 'seeds').flatMap(constraint => { const expression = constraint.expression ?? ''; return expression.startsWith('[') && expression.endsWith(']') ? splitRustExpressions(expression.slice(1, -1)) : [expression]; });
       if (seeds?.length) { const id = `pda:${account.id}`; account.pdaId = id; program.securitySurface.pdaSites.push({ id, location: account.location, seeds, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, relatedAccountId: account.id, enclosingInstruction: semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: `${framework} account PDA constraint`, location: account.location }], confidence: 0.95 }); }
+      else if (account.pdaId && !program.securitySurface.pdaSites.some(site => site.id === account.pdaId)) { program.securitySurface.pdaSites.push({ id: account.pdaId, location: account.location, seeds: undefined, bump: account.constraints?.find(constraint => constraint.kind === 'bump')?.expression, relatedAccountId: account.id, enclosingInstruction: semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name, evidence: [{ description: `${framework} PDA derivation on ${account.name} without explicit seeds`, location: account.location }], confidence: 0.8 }); }
       const initConstraint = account.constraints?.find(constraint => constraint.kind === 'init' || constraint.kind === 'init_if_needed' || constraint.kind === 'init(idempotent)');
       if (initConstraint) {
         const enclosingInstruction = semanticInstructions.find(instruction => instruction.contextType === account.contextType)?.name;
@@ -365,7 +372,7 @@ function extractSites(fn: RustNode, metric: FunctionMetric, program: ProgramUnit
     else if (/^(?:.*::)?invoke$|cpi::invoke$|\.invoke$/.test(baseApi)) addCpi(call, api, false);
     else if (/(?:^|::)cpi::[A-Za-z_][A-Za-z0-9_]*$/.test(baseApi)) addCpi(call, api, /new_with_signer/.test(call.text));
     else if (importedCpi) addCpi(call, importedCpi, /new_with_signer/.test(call.text));
-    else if (isKnownCpiWrapper(api)) addCpi(call, api, false, targetForKind(inferTargetKind(api)));
+    else if (isKnownCpiWrapper(api)) addCpi(call, api, /new_with_signer/.test(call.text), targetForKind(inferTargetKind(api)));
     else if (steelSource && isSteelCpiHelper(baseApi)) addCpi(call, api, /(?:create_program_account|allocate_account|invoke_signed)/.test(baseApi), 'system-program');
   }
   const occurrence = (pattern: RegExp) => (text.match(pattern) ?? []).length;
@@ -445,7 +452,7 @@ function inferCpiTarget(api: string, instructionExpression: string, functionText
 
 function targetKind(target: string): import('../model/report').ExternalProgramKind {
   if (/system/i.test(target)) return 'system-program';
-  if (/token_2022|token2022/i.test(target)) return 'token-2022';
+  if (/token[_-]?2022|token2022/i.test(target)) return 'token-2022';
   if (/associated/i.test(target)) return 'associated-token';
   if (/memo/i.test(target)) return 'memo';
   if (/stake/i.test(target)) return 'stake';
@@ -459,7 +466,7 @@ function targetKind(target: string): import('../model/report').ExternalProgramKi
   return 'custom';
 }
 
-function inferTargetKind(api: string): import('../model/report').ExternalProgramKind { if (/pinocchio[_-]system|system_instruction|system_program|SystemProgram/i.test(api)) return 'system-program'; if (/token[_-]2022/i.test(api)) return 'token-2022'; if (/associated[_-]token|AssociatedToken/i.test(api)) return 'associated-token'; if (/memo/i.test(api)) return 'memo'; if (/stake/i.test(api)) return 'stake'; if (/vote/i.test(api)) return 'vote'; if (/lookup.*table|address_lookup/i.test(api)) return 'address-lookup-table'; if (/compute.*budget/i.test(api)) return 'compute-budget'; if (/ed25519/i.test(api)) return 'ed25519'; if (/secp256k1/i.test(api)) return 'secp256k1'; if (/secp256r1/i.test(api)) return 'secp256r1'; if (/anchor_spl.*token|pinocchio[_-]token|spl_token|token::|token_program|TokenProgram/i.test(api)) return 'spl-token'; return /invoke|CpiContext|\.invoke/.test(api) ? 'dynamic' : 'unknown'; }
+function inferTargetKind(api: string): import('../model/report').ExternalProgramKind { if (/pinocchio[_-]system|system_instruction|system_program|SystemProgram/i.test(api)) return 'system-program'; if (/token[_-]?2022|token2022/i.test(api)) return 'token-2022'; if (/associated[_-]token|AssociatedToken/i.test(api)) return 'associated-token'; if (/memo/i.test(api)) return 'memo'; if (/stake/i.test(api)) return 'stake'; if (/vote/i.test(api)) return 'vote'; if (/lookup.*table|address_lookup/i.test(api)) return 'address-lookup-table'; if (/compute.*budget/i.test(api)) return 'compute-budget'; if (/ed25519/i.test(api)) return 'ed25519'; if (/secp256k1/i.test(api)) return 'secp256k1'; if (/secp256r1/i.test(api)) return 'secp256r1'; if (/anchor_spl.*token|pinocchio[_-]token|spl_token|token::|token_program|TokenProgram/i.test(api)) return 'spl-token'; return /invoke|CpiContext|\.invoke/.test(api) ? 'dynamic' : 'unknown'; }
 function targetForKind(kind: import('../model/report').ExternalProgramKind): string | undefined { return kind === 'dynamic' || kind === 'unknown' ? undefined : kind; }
 function isKnownCpiWrapper(api: string): boolean { return /(?:anchor_spl|pinocchio[_-](?:system|token|associated|memo)|quasar_spl|quasar::cpi|steel::cpi)/i.test(api) && /(?:transfer|mint|burn|close|create|initialize|invoke|assign|allocate|approve|revoke|freeze|thaw|authority|recover)/i.test(api); }
 function isSteelCpiHelper(api: string): boolean { return /(?:^|::)(?:create_account|create_program_account(?:_with_bump)?|allocate_account(?:_with_bump)?)$/.test(api) || /\.collect$/.test(api); }

@@ -1,4 +1,5 @@
 import {
+  AssetFlowSummary,
   AuditManifest,
   Evidence,
   InstructionAccountDossier,
@@ -16,6 +17,7 @@ export function refreshAuditProducts(report: WorkspaceReport): void {
   for (const program of report.programs) {
     program.instructionDossiers = buildInstructionDossiers(program);
     program.stateFlows = buildStateFlows(program);
+    program.assetFlows = (program.assetFlows ?? []).sort((a, b) => a.id.localeCompare(b.id));
   }
   report.auditManifest = buildAuditManifest(report);
 }
@@ -71,7 +73,9 @@ function buildInstructionDossiers(program: ProgramUnit): InstructionDossier[] {
         unresolvedCalls: sorted(surface?.unresolvedCalls ?? []), ambiguousCalls: sorted(surface?.ambiguousCalls ?? []),
         unresolvedCallDetails: [...(surface?.unresolvedCallDetails ?? [])].sort((a, b) => a.callId.localeCompare(b.callId))
       },
-      accounts, cpis, pdas, stateAccesses: [...(surface?.stateAccesses ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
+      accounts, cpis, pdas,
+      assetFlows: (program.assetFlows ?? []).filter(flow => flow.instructionId === instructionId).sort((a, b) => a.id.localeCompare(b.id)),
+      stateAccesses: [...(surface?.stateAccesses ?? [])].sort((a, b) => a.id.localeCompare(b.id)),
       stateTypeIds: sorted(accounts.flatMap(item => item.stateTypeId ? [item.stateTypeId] : [])),
       externalProgramIds: sorted(surface?.externalPrograms ?? []), sysvarIds: sorted(surface?.sysvars ?? []),
       runtimeOperationIds: sorted(surface?.syscalls ?? []), eventIds: sorted(surface?.events ?? []), errorIds: sorted(surface?.errors ?? []),
@@ -126,11 +130,25 @@ function buildAuditManifest(report: WorkspaceReport): AuditManifest {
   }))).sort((a, b) => a.id.localeCompare(b.id));
   const allDossiers = programs.flatMap(program => program.instructionDossiers ?? []);
   const allFlows = programs.flatMap(program => program.stateFlows ?? []);
+  const assetFlows = programs.flatMap(program => program.assetFlows ?? []);
+  const byCategory: Record<string, number> = {};
+  for (const flow of assetFlows) if (flow.operationCategory) byCategory[flow.operationCategory] = (byCategory[flow.operationCategory] ?? 0) + 1;
+  const instructionsWithFlows = new Set(assetFlows.map(flow => `${flow.program}:${flow.instructionId}`)).size;
+  const scopeAssetFlows: AssetFlowSummary = {
+    total: assetFlows.length,
+    instructionsWithFlows,
+    byCategory,
+    splTokenPrograms: programs.filter(program => (program.assetFlows ?? []).some(flow => flow.tokenProgram === 'spl-token')).length,
+    token2022Programs: programs.filter(program => (program.assetFlows ?? []).some(flow => flow.tokenProgram === 'token-2022')).length
+  };
   return {
     formatVersion: 1, analysisMode: 'local-offline-deterministic',
     scope: {
       programs: programs.length, packages: report.workspaceGraph?.packages.length ?? new Set(programs.map(item => item.packageId).filter(Boolean)).size,
-      sourceFiles: report.files.length, instructions: report.summary.instructions, dossiers: allDossiers.length, stateFlows: allFlows.length
+      sourceFiles: report.files.length, instructions: report.summary.instructions, dossiers: allDossiers.length, stateFlows: allFlows.length,
+      assetFlows: scopeAssetFlows.total, instructionsWithAssetFlows: scopeAssetFlows.instructionsWithFlows,
+      splTokenPrograms: scopeAssetFlows.splTokenPrograms, token2022Programs: scopeAssetFlows.token2022Programs,
+      assetFlowCategories: Object.fromEntries(Object.entries(scopeAssetFlows.byCategory).sort(([a], [b]) => a.localeCompare(b)))
     },
     programs: programs.map(program => ({
       program: program.name, packageId: program.packageId, packageKind: program.packageKind, programId: program.identity?.programId,

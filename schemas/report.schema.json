@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/R4Y4N3/Sealevel-Insight/schemas/report.schema.json",
-  "title": "Sealevel Insight Report 0.6.0",
+  "title": "Sealevel Insight Report 0.7.0",
   "type": "object",
   "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
   "properties": {
-    "schemaVersion": { "const": "0.6.0" },
+    "schemaVersion": { "const": "0.7.0" },
     "tool": {
       "type": "object",
       "required": ["name", "version"],
-      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.6.0" } },
+      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.7.0" } },
       "additionalProperties": false
     },
     "generatedAt": { "type": "string", "minLength": 1 },
@@ -62,6 +62,7 @@
         "frameworkEvidence": { "type": "array", "items": { "$ref": "#/$defs/frameworkEvidence" } },
         "instructionDossiers": { "type": "array", "items": { "$ref": "#/$defs/instructionDossier" } },
         "stateFlows": { "type": "array", "items": { "$ref": "#/$defs/stateFlow" } },
+        "assetFlows": { "type": "array", "items": { "$ref": "#/$defs/tokenAssetFlow" } },
         "stateAccessSites": { "type": "array", "items": { "$ref": "#/$defs/stateAccessSite" } },
         "conditionalCompilation": { "$ref": "#/$defs/conditionalCompilation" },
         "symbols": { "type": "array", "items": { "$ref": "#/$defs/rustSymbol" } },
@@ -97,7 +98,8 @@
     },
     "constraint": { "type": "object", "required": ["kind", "location"], "properties": { "kind": { "type": "string" }, "expression": { "type": "string" }, "location": { "$ref": "#/$defs/location" } } },
     "accountRelation": { "type": "object", "required": ["kind", "target", "constraint", "location"], "properties": { "kind": { "enum": ["has-one", "payer", "close-destination", "realloc-payer", "seed-program", "token-mint", "token-authority", "token-program", "mint-authority", "mint-freeze-authority", "associated-token-mint", "associated-token-authority", "associated-token-program", "extension-authority", "extension-program", "extension-address"] }, "target": { "type": "string" }, "constraint": { "type": "string" }, "location": { "$ref": "#/$defs/location" } } },
-    "cpi": { "type": "object", "required": ["location", "pdaSigned", "evidence", "confidence"], "properties": { "id": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "pdaSigned": { "type": "boolean" }, "operation": { "type": "string" }, "operationCategory": { "enum": ["account-creation", "allocation", "ownership-change", "lamport-transfer", "token-transfer", "token-mint", "token-burn", "account-close", "authority-change", "freeze", "thaw", "token-account-create", "token-account-recovery", "initialization", "nonce", "other"] }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" } } },
+    "cpi": { "type": "object", "required": ["location", "pdaSigned", "evidence", "confidence"], "properties": { "id": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "pdaSigned": { "type": "boolean" }, "operation": { "type": "string" }, "operationCategory": { "$ref": "#/$defs/cpiOperationCategory" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" } } },
+    "cpiOperationCategory": { "enum": ["account-creation", "allocation", "ownership-change", "lamport-transfer", "token-transfer", "token-mint", "token-burn", "account-close", "authority-change", "freeze", "thaw", "token-account-create", "token-account-recovery", "initialization", "nonce", "other"] },
     "pda": { "type": "object", "required": ["location", "evidence", "confidence"], "properties": { "id": { "type": "string" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "confidence": { "$ref": "#/$defs/confidence" } } },
     "frameworkEvidence": { "type": "object", "required": ["framework", "confidence", "evidence"], "properties": { "framework": { "type": "string" }, "confidence": { "$ref": "#/$defs/confidence" }, "evidence": { "$ref": "#/$defs/evidenceArray" }, "location": { "$ref": "#/$defs/location" } } },
     "coverageRatio": { "type": "object", "required": ["resolved", "total", "percent"], "properties": { "resolved": { "$ref": "#/$defs/count" }, "total": { "$ref": "#/$defs/count" }, "percent": { "type": "number", "minimum": 0, "maximum": 100 } } },
@@ -128,7 +130,8 @@
       "properties": {
         "id": { "type": "string" }, "program": { "type": "string" }, "instructionId": { "type": "string" }, "name": { "type": "string" }, "handler": { "type": "string" }, "contextType": { "type": "string" }, "discriminator": { "type": "string" }, "arguments": { "type": "array", "items": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "type": { "type": "string" } }, "additionalProperties": false } }, "returns": { "type": "string" }, "remainingAccounts": { "$ref": "#/$defs/remainingAccounts" }, "location": { "$ref": "#/$defs/location" },
         "reachability": { "type": "object", "required": ["complete", "incompleteReasons", "functions", "unresolvedCalls", "ambiguousCalls", "unresolvedCallDetails"], "properties": { "complete": { "type": "boolean" }, "incompleteReasons": { "$ref": "#/$defs/stringArray" }, "functions": { "$ref": "#/$defs/stringArray" }, "unresolvedCalls": { "$ref": "#/$defs/stringArray" }, "ambiguousCalls": { "$ref": "#/$defs/stringArray" }, "unresolvedCallDetails": { "type": "array", "items": { "$ref": "#/$defs/unresolvedCallDetail" } } }, "additionalProperties": false },
-        "accounts": { "type": "array", "items": { "$ref": "#/$defs/instructionAccountDossier" } }, "cpis": { "type": "array", "items": { "$ref": "#/$defs/instructionCpiDossier" } }, "pdas": { "type": "array", "items": { "$ref": "#/$defs/instructionPdaDossier" } }, "stateAccesses": { "type": "array", "items": { "$ref": "#/$defs/instructionStateAccess" } },
+        "accounts": { "type": "array", "items": { "$ref": "#/$defs/instructionAccountDossier" } }, "cpis": { "type": "array", "items": { "$ref": "#/$defs/instructionCpiDossier" } }, "pdas": { "type": "array", "items": { "$ref": "#/$defs/instructionPdaDossier" } },
+        "assetFlows": { "type": "array", "items": { "$ref": "#/$defs/tokenAssetFlow" } }, "stateAccesses": { "type": "array", "items": { "$ref": "#/$defs/instructionStateAccess" } },
         "stateTypeIds": { "$ref": "#/$defs/stringArray" }, "externalProgramIds": { "$ref": "#/$defs/stringArray" }, "sysvarIds": { "$ref": "#/$defs/stringArray" }, "runtimeOperationIds": { "$ref": "#/$defs/stringArray" }, "eventIds": { "$ref": "#/$defs/stringArray" }, "errorIds": { "$ref": "#/$defs/stringArray" }, "crossPackageSurfaces": { "type": "array", "items": { "$ref": "#/$defs/crossPackageSurface" } }, "reachabilityWitnesses": { "type": "array", "items": { "$ref": "#/$defs/reachabilityWitness" } },
         "semanticSites": { "type": "object", "required": ["initialization", "realloc", "close", "serialization", "deserialization", "lamportMutation", "dataMutation"], "properties": { "initialization": { "$ref": "#/$defs/stringArray" }, "realloc": { "$ref": "#/$defs/stringArray" }, "close": { "$ref": "#/$defs/stringArray" }, "serialization": { "$ref": "#/$defs/stringArray" }, "deserialization": { "$ref": "#/$defs/stringArray" }, "lamportMutation": { "$ref": "#/$defs/stringArray" }, "dataMutation": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false },
         "reviewComplexity": { "$ref": "#/$defs/reviewComplexity" }, "evidence": { "$ref": "#/$defs/evidenceArray" }
@@ -156,11 +159,55 @@
       "type": "object", "required": ["id", "instructionId", "accountId", "direct", "relationship", "operations", "dataAccess", "lamportAccess", "serialization", "fieldReads", "fieldWrites", "accessSiteIds", "accessComplete", "location", "evidence"],
       "properties": { "id": { "type": "string" }, "instructionId": { "type": "string" }, "accountId": { "type": "string" }, "stateTypeId": { "type": "string" }, "stateType": { "type": "string" }, "direct": { "type": "boolean" }, "relationship": { "enum": ["reads", "writes", "signer", "unchecked", "unknown"] }, "operations": { "type": "array", "items": { "enum": ["read", "write", "init", "create", "realloc", "close", "lamport-transfer", "unknown"] } }, "dataAccess": { "type": "array", "items": { "enum": ["read", "write"] } }, "lamportAccess": { "type": "array", "items": { "enum": ["read", "write"] } }, "serialization": { "$ref": "#/$defs/stringArray" }, "fieldReads": { "$ref": "#/$defs/stringArray" }, "fieldWrites": { "$ref": "#/$defs/stringArray" }, "accessSiteIds": { "$ref": "#/$defs/stringArray" }, "accessComplete": { "type": "boolean" }, "location": { "$ref": "#/$defs/location" }, "evidence": { "$ref": "#/$defs/evidenceArray" } }, "additionalProperties": false
     },
+    "tokenAssetFlowBinding": {
+      "type": "object",
+      "required": ["expression", "resolved"],
+      "properties": {
+        "accountId": { "type": "string" },
+        "accountName": { "type": "string" },
+        "expression": { "type": "string", "minLength": 1 },
+        "resolved": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tokenAssetFlow": {
+      "type": "object",
+      "required": ["id", "instructionId", "program", "direct", "pdaSigned", "signerPdaIds", "functionPath", "callPath", "location", "confidence", "evidence", "complete", "unresolvedReasons"],
+      "properties": {
+        "id": { "type": "string" },
+        "instructionId": { "type": "string" },
+        "program": { "type": "string" },
+        "cpiId": { "type": "string" },
+        "direct": { "type": "boolean" },
+        "operation": { "type": "string" },
+        "operationCategory": { "$ref": "#/$defs/cpiOperationCategory" },
+        "tokenProgram": { "enum": ["spl-token", "token-2022", "associated-token"] },
+        "source": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "destination": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "mint": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "authority": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "authorityType": { "enum": ["signer-account", "pda", "ordinary-account", "unresolved"] },
+        "delegate": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "newAuthority": { "$ref": "#/$defs/tokenAssetFlowBinding" },
+        "amount": { "type": "string" },
+        "decimals": { "type": "string" },
+        "pdaSigned": { "type": "boolean" },
+        "signerPdaIds": { "$ref": "#/$defs/stringArray" },
+        "functionPath": { "$ref": "#/$defs/stringArray" },
+        "callPath": { "$ref": "#/$defs/stringArray" },
+        "location": { "$ref": "#/$defs/location" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "evidence": { "$ref": "#/$defs/evidenceArray" },
+        "complete": { "type": "boolean" },
+        "unresolvedReasons": { "$ref": "#/$defs/stringArray" }
+      },
+      "additionalProperties": false
+    },
     "auditManifest": {
       "type": "object", "required": ["formatVersion", "analysisMode", "scope", "programs", "reviewQueue", "externalPrograms", "unresolved", "evidence"],
       "properties": {
         "formatVersion": { "const": 1 }, "analysisMode": { "const": "local-offline-deterministic" },
-        "scope": { "type": "object", "required": ["programs", "packages", "sourceFiles", "instructions", "dossiers", "stateFlows"], "properties": { "programs": { "$ref": "#/$defs/count" }, "packages": { "$ref": "#/$defs/count" }, "sourceFiles": { "$ref": "#/$defs/count" }, "instructions": { "$ref": "#/$defs/count" }, "dossiers": { "$ref": "#/$defs/count" }, "stateFlows": { "$ref": "#/$defs/count" } }, "additionalProperties": false },
+        "scope": { "type": "object", "required": ["programs", "packages", "sourceFiles", "instructions", "dossiers", "stateFlows"], "properties": { "programs": { "$ref": "#/$defs/count" }, "packages": { "$ref": "#/$defs/count" }, "sourceFiles": { "$ref": "#/$defs/count" }, "instructions": { "$ref": "#/$defs/count" }, "dossiers": { "$ref": "#/$defs/count" }, "stateFlows": { "$ref": "#/$defs/count" }, "assetFlows": { "$ref": "#/$defs/count" }, "instructionsWithAssetFlows": { "$ref": "#/$defs/count" }, "splTokenPrograms": { "$ref": "#/$defs/count" }, "token2022Programs": { "$ref": "#/$defs/count" }, "assetFlowCategories": { "type": "object", "additionalProperties": { "$ref": "#/$defs/count" } } }, "additionalProperties": false },
         "programs": { "type": "array", "items": { "type": "object", "required": ["program", "frameworks", "sourceFiles", "instructionDossierIds", "stateFlowIds", "externalProgramIds", "dependencyCount", "reviewScore", "coverageComplete"], "properties": { "program": { "type": "string" }, "packageId": { "type": "string" }, "packageKind": { "type": "string" }, "programId": { "type": "string" }, "frameworks": { "$ref": "#/$defs/stringArray" }, "sourceFiles": { "$ref": "#/$defs/stringArray" }, "instructionDossierIds": { "$ref": "#/$defs/stringArray" }, "stateFlowIds": { "$ref": "#/$defs/stringArray" }, "externalProgramIds": { "$ref": "#/$defs/stringArray" }, "dependencyCount": { "$ref": "#/$defs/count" }, "reviewScore": { "type": "number", "minimum": 0 }, "coverageComplete": { "type": "boolean" } }, "additionalProperties": false } },
         "reviewQueue": { "type": "array", "items": { "type": "object", "required": ["dossierId", "program", "instruction", "score", "complete", "reasons", "location"], "properties": { "dossierId": { "type": "string" }, "program": { "type": "string" }, "instruction": { "type": "string" }, "score": { "type": "number", "minimum": 0 }, "complete": { "type": "boolean" }, "reasons": { "$ref": "#/$defs/stringArray" }, "location": { "$ref": "#/$defs/location" } }, "additionalProperties": false } },
         "externalPrograms": { "type": "array", "items": { "type": "object", "required": ["id", "program", "name", "kind", "cpiCount", "signedCpiCount", "calledByInstructions"], "properties": { "id": { "type": "string" }, "program": { "type": "string" }, "name": { "type": "string" }, "kind": { "type": "string" }, "programId": { "type": "string" }, "cpiCount": { "$ref": "#/$defs/count" }, "signedCpiCount": { "$ref": "#/$defs/count" }, "calledByInstructions": { "$ref": "#/$defs/stringArray" } }, "additionalProperties": false } },

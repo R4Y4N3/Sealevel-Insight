@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.6.0
+## 0.7.0
+
+- Added Token & Asset Flow v2: evidence-backed per-instruction token/asset flows with operation, token program, source/destination/mint/authority/delegate/new-authority roles, amount/decimals expressions, authority type, PDA signing correlation, direct/transitive path classification, completeness status, and explicit unresolved reasons.
+- Role resolution uses positively identified signatures only - Anchor `CpiContext` account-struct fields, known SPL/Token-2022 instruction constructors, or documented builder argument orders; unrecognized calls keep every role unresolved instead of guessing positions.
+- Flows integrate into instruction dossiers, the audit manifest scope (totals, instructions-with-flows, SPL/Token-2022 program counts, category breakdown), workspace summary counts, capabilities, baseline diffs, Markdown reports, the standalone offline HTML cockpit, and the VS Code Explorer/report panel.
+- Added semantic invariants for asset flows: CPI/instruction/account/PDA reference integrity, duplicate detection, resolved-role account binding, complete/unresolved consistency, and manifest count agreement.
+- Fixed Token-2022 CPI target classification when the API or program expression spells the kind with hyphens (`token-2022`) in addition to underscores.
+- Signed Anchor wrapper CPIs (`CpiContext::new_with_signer`) now record PDA signing evidence consistently with native `invoke_signed` sites.
+- Versioned the report schema/tool at 0.7.0; cache entries from older schemas are ignored rather than partially restored, and baseline diffs require matching schema versions with an explicit re-baseline error.
+- VSIX packaging and verification now derive the artifact name and expected version from package metadata instead of hardcoded version strings.
+
+Post-release main-line work now attributed to this version:
 
 - Added Reachability v2: tri-state Cargo feature/`cfg` filtering, evidence-backed typed inherent/trait method resolution, recursive internal-dependency surfaces, and per-call unresolved explanations/candidates.
 - Added cross-package functions, CPIs, signed/dynamic CPIs, PDAs, state/runtime operations, external programs, and completeness evidence to instruction dossiers, reports, diffs, Explorer views, review scoring, schema validation, and invariants.
@@ -9,13 +20,17 @@
 - Added State & Account Dataflow v2 with field-level reads/writes, data and lamport access, lifecycle operations, alias/call evidence paths, and instruction-account bindings.
 - Added Quasar framework/ABI v2 coverage for return data, account relations, idempotent initialization, remaining-account contracts, method-style CPI builders, multi-signer invocation, and generated PDA seed helpers; remaining-account review scoring now applies its documented weight.
 - Added Steel semantics v2 for chained account validations, sysvars and PDA seeds, program-account helper CPIs and lifecycle, lamport transfer/close helpers, typed account evidence, and concrete `error!` enum variants.
+- Added strict report-schema validation, 120 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
+
+## 0.6.0
+
 - Added complete TOML-backed Cargo workspace/package/target/dependency/feature modeling with recoverable diagnostics.
 - Added module-aware Rust symbols, conservative call resolution, cycle-safe instruction reachability, and explicit ambiguous/unresolved/dynamic coverage loss.
 - Added unified account, state, serialization, CPI, PDA, external-program, sysvar, runtime-operation, event, error, capability, and review-complexity models.
 - Deepened Anchor, native Rust, Pinocchio, Steel, and Quasar enrichment; added Codama/Shank metadata enrichment and source/IDL reconciliation.
 - Added full CLI commands/options/policy exit codes, deterministic local caches, baselines/diffs, scope configuration, duplicate hashing, and standalone offline HTML graph modes.
 - Expanded VS Code commands, Explorer hierarchy, semantic CodeLens/hovers, diagnostics, cancellation, debounced auto-analysis, bounded concurrency, and persisted cache/report behavior.
-- Added strict report-schema validation, 96 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
+- Added strict report-schema validation, 65 deterministic tests, packaged CLI/Extension Host integration, a 20-case/449-assertion QuickNode ground-truth matrix, pinned independent Foundation/Steel/Shank validation, benchmarks, VSIX cleanliness checks, and an original 256×256 icon.
 - Fixed packaged CommonJS parser initialization, root-level VS Code source discovery, workspace-relative test exclusion, scopefile merging, lexical marker counting, and percentage-policy/report rendering errors.
 
 ## 0.5.0

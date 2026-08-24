@@ -6,8 +6,9 @@ import { runTests } from '@vscode/test-electron';
 
 async function main(): Promise<void> {
   const repositoryRoot = path.resolve(__dirname, '../../..');
+  const { version } = JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')) as { version: string };
   const extensionDevelopmentPath = mkdtempSync(path.join(tmpdir(), 'sealevel-insight-vsix-'));
-  execFileSync('unzip', ['-q', path.join(repositoryRoot, 'sealevel-insight-0.6.0.vsix'), '-d', extensionDevelopmentPath]);
+  execFileSync('unzip', ['-q', path.join(repositoryRoot, `sealevel-insight-${version}.vsix`), '-d', extensionDevelopmentPath]);
   const extensionPath = path.join(extensionDevelopmentPath, 'extension');
   const fixture = path.resolve(repositoryRoot, 'test/fixtures/anchor-basic');
   const cli = path.join(extensionPath, 'dist/cli.js');
@@ -15,7 +16,7 @@ async function main(): Promise<void> {
     const output = path.join(extensionDevelopmentPath, `report.${format === 'markdown' ? 'md' : format}`);
     execFileSync(process.execPath, [cli, 'analyze', fixture, '--format', format, '--output', output, '--no-cache']);
     const content = readFileSync(output, 'utf8');
-    if (format === 'json') { const report = JSON.parse(content); if (report.schemaVersion !== '0.6.0' || report.summary.instructions < 1) throw new Error('Packaged CLI JSON export is invalid.'); }
+    if (format === 'json') { const report = JSON.parse(content); if (report.schemaVersion !== version || report.summary.instructions < 1) throw new Error('Packaged CLI JSON export is invalid.'); }
     if (format === 'markdown' && !content.includes('# Sealevel Insight')) throw new Error('Packaged CLI Markdown export is invalid.');
     if (format === 'html' && (!content.includes("default-src 'none'") || !content.includes('<!doctype html>'))) throw new Error('Packaged CLI HTML export is invalid.');
   }

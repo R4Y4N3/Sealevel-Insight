@@ -1,6 +1,6 @@
-# Sealevel Insight v0.6
+# Sealevel Insight v0.7
 
-Local program intelligence, architecture, metrics, and audit-scoping for Solana source code. Sealevel Insight is a VS Code extension and CLI designed to make an unfamiliar program repository answerable: what is in scope, what is externally reachable, which accounts and state are involved, where CPIs and PDAs occur, and which conclusions remain unresolved.
+Local program intelligence, architecture, metrics, and audit-scoping for Solana source code. Sealevel Insight is a VS Code extension and CLI designed to make an unfamiliar program repository answerable: what is in scope, what is externally reachable, which accounts and state are involved, where CPIs and PDAs occur, which token and asset movements happen and under whose authority, and which conclusions remain unresolved.
 
 Normal analysis is deterministic and offline. It does not upload source, use telemetry, call RPC, invoke an AI API, or require the Solana/Anchor toolchains.
 
@@ -11,7 +11,7 @@ npm install
 npm run typecheck
 npm test
 npm run package
-code --install-extension sealevel-insight-0.6.0.vsix
+code --install-extension sealevel-insight-0.7.0.vsix
 ```
 
 Open a Rust workspace and run **Sealevel Insight: Analyze Workspace**. The Explorer, CodeLens, hovers, Problems diagnostics, and offline report use the same cached analysis model.
@@ -53,9 +53,17 @@ Review Complexity estimates human audit effort. It is not a vulnerability detect
 
 ## Audit products
 
-Every analysis produces a deterministic audit manifest plus one instruction dossier for each extracted entrypoint. A dossier joins the instruction's handler and transitive call surface to its accounts and validations, state types, lifecycle/mutation sites, CPI operations and targets, PDA seeds/signing, sysvars, runtime operations, events, errors, review score, and explicit reachability gaps. Account/state-flow records make each instruction-to-account relationship and its observed read/write/init/realloc/close/lamport behavior directly queryable.
+Every analysis produces a deterministic audit manifest plus one instruction dossier for each extracted entrypoint. A dossier joins the instruction's handler and transitive call surface to its accounts and validations, state types, lifecycle/mutation sites, CPI operations and targets, PDA seeds/signing, token/asset flows, sysvars, runtime operations, events, errors, review score, and explicit reachability gaps. Account/state-flow records make each instruction-to-account relationship and its observed read/write/init/realloc/close/lamport behavior directly queryable.
 
-The same records are available in JSON, Markdown, the standalone offline HTML audit cockpit, the VS Code report, and the Explorer. Baseline diffs compare dossier shape, account/state flows, and CPI operation classification. The manifest contains no timestamp and makes unresolved calls, dynamic CPIs, incomplete instruction surfaces, and IDL differences explicit; it is an audit-scoping index, not a security verdict.
+### Token & Asset Flow v2
+
+Where source evidence supports it, each instruction dossier reports the token movements it performs: the operation (`transfer`, `transfer_checked`, `mint_to`, `burn`, `close_account`, `set_authority`, `approve`, `revoke`, `freeze_account`, `thaw_account`, `initialize_*`, associated-token creation/recovery), whether SPL Token or Token-2022 is targeted, the bound source/destination/mint/authority/delegate/new-authority accounts, the raw amount/decimals expressions, the authority kind (signer account, proven PDA, ordinary account), invoke_signed/PDA-signer correlation, direct-vs-reached-through-helpers classification with call paths, per-flow evidence, completeness, and explicit unresolved reasons.
+
+Roles are bound only from positively identified signatures: Anchor `CpiContext` account-struct fields, known SPL/Token-2022 instruction constructors, or documented builder argument orders. A recognized operation whose roles cannot be established is reported unresolved — never guessed.
+
+Known limitations. Resolution may remain incomplete for runtime-selected program IDs, dynamic dispatch through trait objects or generic bounds, opaque procedural macros, unknown custom CPI wrappers, raw pointer aliasing, missing dependency sources, arbitrary Token-2022 extension behavior, and values constructed dynamically at runtime. Semantic resolution is evidence-bounded, never claimed complete.
+
+The same records are available in JSON, Markdown, the standalone offline HTML audit cockpit, the VS Code report, and the Explorer. Baseline diffs compare dossier shape, account/state flows, token/asset flows (operation, token program, roles, authority kind, signing), and CPI operation classification. The manifest contains no timestamp and makes unresolved calls, dynamic CPIs, incomplete instruction surfaces, and IDL differences explicit; it is an audit-scoping index, not a security verdict.
 
 ## Commands
 
@@ -82,7 +90,7 @@ Exports are portable. HTML is standalone, uses no CDN or remote requests, applie
 
 ## Language support
 
-Rust is the implemented language frontend. Solang/Solidity-on-Solana and hand-written sBPF assembly remain **Not implemented** in v0.6: shipping regex-only frontends would give false confidence, so those files are not claimed as analyzed programs.
+Rust is the implemented language frontend. Solang/Solidity-on-Solana and hand-written sBPF assembly remain **Not implemented**: shipping regex-only frontends would give false confidence, so those files are not claimed as analyzed programs.
 
 ## Cargo and program identity
 

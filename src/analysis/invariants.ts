@@ -83,6 +83,27 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
       const dossierAccessIds = new Set(dossier?.stateAccesses.map(item => item.id) ?? []);
       for (const id of flow.accessSiteIds) if (!dossierAccessIds.has(id)) add(`State flow ${flow.id} references missing state access ${id}`, `state-flow-access:${program.name}:${flow.id}:${id}`);
     }
+    const programCpiIds = cpiIds;
+    const seenFlowKeys = new Set<string>();
+    const dossierFlowIds: string[] = [];
+    for (const flow of program.assetFlows ?? []) {
+      const key = `${flow.instructionId}:${flow.cpiId ?? ''}:${flow.location.uri}:${flow.location.startLine}:${flow.location.startColumn}`;
+      if (seenFlowKeys.has(key)) add(`Duplicate asset flow emitted for ${flow.cpiId ?? flow.location.startLine}`, `asset-flow-duplicate:${flow.id}`);
+      seenFlowKeys.add(key);
+      if (!instructionIds.has(flow.instructionId)) add(`Asset flow ${flow.id} references missing instruction ${flow.instructionId}`, `asset-flow-instruction:${flow.id}`);
+      if (flow.cpiId && !programCpiIds.has(flow.cpiId)) add(`Asset flow ${flow.id} references missing CPI ${flow.cpiId}`, `asset-flow-cpi:${flow.id}`);
+      for (const pdaId of flow.signerPdaIds) if (!pdaIds.has(pdaId)) add(`Asset flow ${flow.id} references missing signer PDA ${pdaId}`, `asset-flow-pda:${flow.id}:${pdaId}`);
+      for (const role of [flow.source, flow.destination, flow.mint, flow.authority, flow.delegate, flow.newAuthority]) {
+        if (role?.resolved && (!role.accountId || !accountIds.has(role.accountId))) add(`Resolved asset flow role in ${flow.id} claims a missing account ${role.accountId}`, `asset-flow-role:${flow.id}:${role.expression}`);
+        if (role && !role.resolved && role.accountId) add(`Unresolved asset flow role in ${flow.id} claims account ID ${role.accountId}`, `asset-flow-unresolved-claim:${flow.id}`);
+        if (role && role.resolved && role.expression === '') add(`Asset flow role in ${flow.id} has an empty source expression`, `asset-flow-empty-expression:${flow.id}`);
+      }
+      if (flow.complete && flow.unresolvedReasons.length) add(`Complete asset flow ${flow.id} carries unresolved reasons`, `asset-flow-complete-consistency:${flow.id}`);
+      const dossier = program.instructionDossiers?.find(item => item.instructionId === flow.instructionId);
+      if (dossier && !dossier.assetFlows.some(item => item.id === flow.id)) add(`Instruction dossier for ${flow.instructionId} is missing asset flow ${flow.id}`, `asset-flow-dossier-link:${flow.id}`);
+      dossierFlowIds.push(...dossier?.assetFlows.map(item => item.id) ?? []);
+    }
+    unique(dossierFlowIds, `${program.name}:dossier-asset-flow`, add);
     const nodeIds = new Set(program.architecture?.nodes.map(node => node.id) ?? []);
     for (const edge of program.architecture?.edges ?? []) {
       if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) add(`Architecture edge references a missing node: ${edge.source} -> ${edge.target}`, `edge:${program.name}:${edge.source}:${edge.target}`);
@@ -95,6 +116,7 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
   if (report.auditManifest) {
     const dossierIds = new Set(report.programs.flatMap(program => program.instructionDossiers?.map(item => item.id) ?? []));
     const flowIds = new Set(report.programs.flatMap(program => program.stateFlows?.map(item => item.id) ?? []));
+    const assetFlowCount = report.programs.reduce((sum, program) => sum + (program.assetFlows?.length ?? 0), 0);
     for (const program of report.auditManifest.programs) {
       for (const id of program.instructionDossierIds) if (!dossierIds.has(id)) add(`Audit manifest references missing instruction dossier ${id}`, `manifest-dossier:${id}`);
       for (const id of program.stateFlowIds) if (!flowIds.has(id)) add(`Audit manifest references missing state flow ${id}`, `manifest-state-flow:${id}`);
@@ -102,6 +124,7 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     for (const item of report.auditManifest.reviewQueue) if (!dossierIds.has(item.dossierId)) add(`Audit review queue references missing instruction dossier ${item.dossierId}`, `manifest-review:${item.dossierId}`);
     const scope = report.auditManifest.scope;
     if (scope.dossiers !== dossierIds.size || scope.stateFlows !== flowIds.size || scope.instructions !== report.summary.instructions) add('Audit manifest scope counts do not match detailed records', 'manifest-scope');
+    if (scope.assetFlows !== undefined && scope.assetFlows !== assetFlowCount) add(`Audit manifest asset flow count ${scope.assetFlows} does not match detailed records (${assetFlowCount})`, 'manifest-asset-flows');
   }
   const expected = {
     rustFiles: report.files.length,

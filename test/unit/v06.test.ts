@@ -93,9 +93,9 @@ describe('Sealevel Insight v0.6 release semantics', () => {
     assert.equal(evaluatePolicy(report, { minimumSemanticCoverage: 0.9 }).passed, false);
   });
 
-  it('round-trips only compatible v0.6 cache entries', async () => {
+  it('round-trips only compatible current-schema cache entries', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-cache-')); const report = await sampleReport('pub fn handler() {}'); const key = analysisCacheKey([{ uri: 'lib.rs', source: 'pub fn handler() {}' }], {});
-    try { await writeAnalysisCache(directory, key, report); assert.equal((await readAnalysisCache(directory, key))?.schemaVersion, '0.6.0'); await fs.writeFile(path.join(directory, `${key}.json`), JSON.stringify({ ...report, schemaVersion: '0.5.0' })); assert.equal(await readAnalysisCache(directory, key), undefined); }
+    try { await writeAnalysisCache(directory, key, report); assert.equal((await readAnalysisCache(directory, key))?.schemaVersion, '0.7.0'); await fs.writeFile(path.join(directory, `${key}.json`), JSON.stringify({ ...report, schemaVersion: '0.6.0' })); assert.equal(await readAnalysisCache(directory, key), undefined); }
     finally { await clearAnalysisCache(directory); }
   });
 
@@ -129,8 +129,8 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   });
 
   it('rejects incompatible report schemas before diffing', async () => {
-    const before = await sampleReport('fn a() {}'); const after = { ...before, schemaVersion: '0.7.0' };
-    assert.throws(() => diffReports(before, after), /Cannot diff report schema/);
+    const before = await sampleReport('fn a() {}'); const after = { ...before, schemaVersion: '0.8.0' };
+    assert.throws(() => diffReports(before, after), /Cannot diff report schema|Unsupported report schema/);
   });
 
   it('keeps Quasar evidence separate from Anchor evidence', async () => {

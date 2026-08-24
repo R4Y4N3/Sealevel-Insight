@@ -1,6 +1,10 @@
 const fs = require('node:fs');
 const cp = require('node:child_process');
-const archive = process.argv[2] || 'sealevel-insight-0.6.0.vsix';
+const path = require('node:path');
+// Derive the expected VSIX name from package metadata; no hardcoded version.
+const root = path.resolve(__dirname, '..');
+const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const archive = process.argv[2] || `sealevel-insight-${version}.vsix`;
 if (!fs.existsSync(archive)) throw new Error(`Missing ${archive}`);
 const listing = cp.execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' });
 for (const required of ['extension/dist/extension.js', 'extension/dist/cli.js', 'extension/dist/tree-sitter.wasm', 'extension/dist/tree-sitter-rust.wasm', 'extension/readme.md', 'extension/changelog.md', 'extension/LICENSE.txt', 'extension/THIRD_PARTY_NOTICES.md', 'extension/schemas/report.schema.json', 'extension/media/icon.png']) {
@@ -13,4 +17,4 @@ if (listing.split('\n').some(item => /extension\/.*\.vsix$/.test(item))) throw n
 for (const prefix of ['extension/src/', 'extension/test/', 'extension/dist-test/', 'extension/dist-integration/', 'extension/.vscode-test/', 'extension/.real-world-cache/', 'extension/.sealevel-insight-cache/', 'extension/node_modules/', 'extension/scripts/']) {
   if (listing.split('\n').some(item => item.startsWith(prefix))) throw new Error(`VSIX contains development-only path ${prefix}`);
 }
-console.log(`verified ${archive}`);
+console.log(`verified ${archive} (v${version})`);

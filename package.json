@@ -10,7 +10,7 @@
   "bin": {
     "sealevel-insight": "./dist/cli.js"
   },
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "R4Y4N3",
   "license": "MIT",
   "repository": {
@@ -42,7 +42,22 @@
     "code-analysis",
     "audit-scoping"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:sealevelInsightExplorer",
+    "onCommand:sealevelInsight.analyzeWorkspace",
+    "onCommand:sealevelInsight.analyzePackage",
+    "onCommand:sealevelInsight.analyzeFile",
+    "onCommand:sealevelInsight.openReport",
+    "onCommand:sealevelInsight.openArchitecture",
+    "onCommand:sealevelInsight.openCallGraph",
+    "onCommand:sealevelInsight.exportJson",
+    "onCommand:sealevelInsight.exportMarkdown",
+    "onCommand:sealevelInsight.exportHtml",
+    "onCommand:sealevelInsight.exportScope",
+    "onCommand:sealevelInsight.saveBaseline",
+    "onCommand:sealevelInsight.compareBaseline",
+    "onCommand:sealevelInsight.clearCache"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "views": {

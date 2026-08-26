@@ -4,9 +4,11 @@ import {
   CpiSite,
   Evidence,
   ProgramUnit,
+  ReachabilityWitness,
   TokenAssetAuthorityType,
   TokenAssetFlow,
-  TokenAssetFlowBinding
+  TokenAssetFlowBinding,
+  TokenProgramKind
 } from '../model/report';
 import { SourceLocation } from '../model/sourceLocation';
 import { splitRustExpressions } from '../utils/text';
@@ -15,13 +17,27 @@ import { splitRustExpressions } from '../utils/text';
  * Token & Asset Flow v2.
  *
  * Builds evidence-backed token/asset flows from the existing CPI sites, account
- * relations, PDA model, call graph, and reachability witnesses. Roles bind only
- * when the exact CPI API signature is positively identified through one of:
+ * relations, PDA model, call graph, reachability witnesses, and cross-package
+ * surfaces. Roles bind only when the exact CPI API signature is positively
+ * identified through one of:
  *   1. an Anchor CpiContext account-struct literal (named fields),
- *   2. a known SPL/Token-2022 instruction-constructor call (documented order),
+ *   2. a known SPL/Token-2022/Associated-Token instruction-constructor call (documented order),
  *   3. a known builder/method-style argument list (documented order).
  * Otherwise every role stays unresolved with an explicit reason. Argument
  * positions are never guessed from unnamed calls.
+ *
+ * Eligibility covers spl-token, token-2022, and Associated Token Program
+ * operations (create, create-idempotent, recover-nested) alike; it is not
+ * restricted to spl-token/token-2022 targets. Modeled `initialize_*` native
+ * constructors (account/account2/account3, mint/mint2) also produce flows;
+ * other `initialize_*` instructions (multisig, extensions, ...) are recognized
+ * elsewhere as CPI sites but are not asset-flow role-modeled.
+ *
+ * Cross-package CPIs proven reachable through the existing cross-package
+ * surfaces also produce flows. Their account roles are never bound against the
+ * calling program's instruction accounts (a different, unrelated account
+ * namespace), so they are evidence-backed but explicitly unresolved unless a
+ * future cross-package symbolic account tracer is added.
  */
 
 const TOKEN_CATEGORIES: CpiOperationCategory[] = [
@@ -29,35 +45,49 @@ const TOKEN_CATEGORIES: CpiOperationCategory[] = [
   'token-account-create', 'token-account-recovery', 'account-close'
 ];
 
-/** Anchor CpiContext account structs: documented field -> flow role. */
+/** Native initialize_* constructors with a documented, modeled role layout (see NATIVE_CONSTRUCTORS).
+ *  Other initialize_* instructions (multisig, extensions, ...) remain CPI-visible but are not asset flows. */
+const MODELED_INITIALIZE_OPERATIONS = new Set(['initialize_account', 'initialize_account2', 'initialize_account3', 'initialize_mint', 'initialize_mint2']);
+
+/** Anchor CpiContext account structs: documented field -> flow role.
+ *  Verified against anchor_spl::token / token_2022 / token_interface / associated_token source. */
 const ANCHOR_STRUCT_FIELDS: Record<string, Record<string, string>> = {
   Transfer: { from: 'source', to: 'destination', authority: 'authority' },
   TransferChecked: { from: 'source', mint: 'mint', to: 'destination', authority: 'authority' },
   MintTo: { mint: 'mint', to: 'destination', authority: 'authority' },
   MintToChecked: { mint: 'mint', to: 'destination', authority: 'authority' },
-  Burn: { from: 'source', authority: 'authority' },
-  BurnChecked: { from: 'source', mint: 'mint', authority: 'authority' },
+  Burn: { mint: 'mint', from: 'source', authority: 'authority' },
+  BurnChecked: { mint: 'mint', from: 'source', authority: 'authority' },
   CloseAccount: { account: 'source', destination: 'destination', authority: 'authority' },
-  SetAuthority: { account: 'source', authority: 'authority', new_authority: 'newAuthority' },
-  Approve: { from: 'source', delegate: 'delegate', authority: 'authority' },
-  ApproveChecked: { from: 'source', mint: 'mint', delegate: 'delegate', authority: 'authority' },
-  Revoke: { from: 'source', authority: 'authority' },
-  FreezeAccount: { account: 'source', mint: 'mint', freeze_authority: 'authority' },
-  ThawAccount: { account: 'source', mint: 'mint', freeze_authority: 'authority' },
-  InitializeAccount: { account: 'source', mint: 'mint', owner: 'authority' },
-  InitializeAccount2: { account: 'source', mint: 'mint', owner: 'authority' },
-  InitializeAccount3: { account: 'source', mint: 'mint', owner: 'authority' },
-  InitializeMint: { mint: 'mint', rent: 'authority' },
-  InitializeMint2: { mint: 'mint', rent: 'authority' }
+  // SetAuthority has no `new_authority` account field: the new authority and authority_type
+  // are instruction arguments, not accounts. See WRAPPER_ROLE_INDEX for newAuthority extraction.
+  SetAuthority: { current_authority: 'authority', account_or_mint: 'source' },
+  // Approve/ApproveChecked name the delegating token account `to`, not `from`.
+  Approve: { to: 'source', delegate: 'delegate', authority: 'authority' },
+  ApproveChecked: { to: 'source', mint: 'mint', delegate: 'delegate', authority: 'authority' },
+  Revoke: { source: 'source', authority: 'authority' },
+  FreezeAccount: { account: 'source', mint: 'mint', authority: 'authority' },
+  ThawAccount: { account: 'source', mint: 'mint', authority: 'authority' },
+  InitializeAccount: { account: 'source', mint: 'mint', authority: 'authority' },
+  InitializeAccount3: { account: 'source', mint: 'mint', authority: 'authority' },
+  // InitializeMint/InitializeMint2 only expose `mint` (+ `rent` for InitializeMint, never a role).
+  // The mint authority is an instruction argument, not an account; see WRAPPER_ROLE_INDEX.
+  InitializeMint: { mint: 'mint' },
+  InitializeMint2: { mint: 'mint' },
+  // anchor_spl::associated_token::{Create, CreateIdempotent (a type alias of Create)}.
+  Create: { associated_token: 'destination', authority: 'authority', mint: 'mint' },
+  CreateIdempotent: { associated_token: 'destination', authority: 'authority', mint: 'mint' }
 };
 
-/** Known SPL/Token-2022 instruction constructors: documented positional roles (index 0 is program id). */
+/** Known SPL/Token-2022 instruction constructors: documented positional roles (index 0 is program id).
+ *  Verified against spl-token instruction function signatures; '' marks a non-account positional
+ *  argument (e.g. an enum) that must be skipped without being mistaken for the next role. */
 const NATIVE_CONSTRUCTORS: Record<string, string[]> = {
   transfer: ['program', 'source', 'destination', 'authority'],
   transfer_checked: ['program', 'source', 'mint', 'destination', 'authority'],
   mint_to: ['program', 'mint', 'destination', 'authority'],
   mint_to_checked: ['program', 'mint', 'destination', 'authority'],
-  burn: ['program', 'source', 'authority'],
+  burn: ['program', 'source', 'mint', 'authority'],
   burn_checked: ['program', 'source', 'mint', 'authority'],
   approve: ['program', 'source', 'delegate', 'authority'],
   approve_checked: ['program', 'source', 'mint', 'delegate', 'authority'],
@@ -65,20 +95,25 @@ const NATIVE_CONSTRUCTORS: Record<string, string[]> = {
   close_account: ['program', 'source', 'destination', 'authority'],
   freeze_account: ['program', 'source', 'mint', 'authority'],
   thaw_account: ['program', 'source', 'mint', 'authority'],
-  set_authority: ['program', 'source', 'newAuthority', 'authority'],
+  // (token_program, owned_pubkey, new_authority: Option<Pubkey>, authority_type: enum, owner_pubkey, signers[])
+  set_authority: ['program', 'source', 'newAuthority', '', 'authority'],
   initialize_account: ['program', 'source', 'mint', 'authority'],
   initialize_account2: ['program', 'source', 'mint', 'authority'],
   initialize_account3: ['program', 'source', 'mint', 'authority'],
-  initialize_mint: ['program', 'mint'],
-  initialize_mint2: ['program', 'mint']
+  // (token_program, mint_pubkey, mint_authority_pubkey, freeze_authority: Option<Pubkey>, decimals)
+  initialize_mint: ['program', 'mint', 'authority'],
+  initialize_mint2: ['program', 'mint', 'authority']
 };
 
-/** Amount/decimal argument offsets relative to the end of the role list, per strategy. */
+/** Amount/decimal argument offsets relative to the end of the argument list, per strategy.
+ *  Real constructors end with `..., signer_pubkeys, amount, decimals`: decimals is last,
+ *  amount is second-to-last. InitializeMint/2 end with `..., decimals` (no amount). */
 const NATIVE_AMOUNT_OFFSET: Record<string, { amount?: number; decimals?: number }> = {
-  transfer: { amount: -1 }, transfer_checked: { amount: -1, decimals: -2 },
-  mint_to: { amount: -1 }, mint_to_checked: { amount: -1, decimals: -2 },
-  burn: { amount: -1 }, burn_checked: { amount: -1, decimals: -2 },
-  approve: { amount: -1 }, approve_checked: { amount: -1, decimals: -2 }
+  transfer: { amount: -1 }, transfer_checked: { amount: -2, decimals: -1 },
+  mint_to: { amount: -1 }, mint_to_checked: { amount: -2, decimals: -1 },
+  burn: { amount: -1 }, burn_checked: { amount: -2, decimals: -1 },
+  approve: { amount: -1 }, approve_checked: { amount: -2, decimals: -1 },
+  initialize_mint: { decimals: -1 }, initialize_mint2: { decimals: -1 }
 };
 
 /** Method/builder-style wrappers already recognized by the project (args after the context/builder receiver). */
@@ -90,7 +125,11 @@ const BUILDER_SIGNATURES: Record<string, string[]> = {
   approve: ['source', 'delegate', 'authority'],
   revoke: ['source', 'authority'],
   freeze_account: ['source', 'mint', 'authority'],
-  thaw_account: ['source', 'mint', 'authority']
+  thaw_account: ['source', 'mint', 'authority'],
+  // Anchor account-init constraint synthetic sites (`#[account(init, associated_token::...)]`)
+  // record accountArguments as [account, payer]; the account itself is unambiguously the ATA.
+  create: ['destination'],
+  create_idempotent: ['destination']
 };
 
 const BUILDER_AMOUNT_INDEX: Record<string, number> = {
@@ -102,10 +141,25 @@ const WRAPPER_VALUE_INDEX: Record<string, { amount?: number; decimals?: number }
   transfer: { amount: 0 }, transfer_checked: { amount: 0, decimals: 1 },
   mint_to: { amount: 0 }, mint_to_checked: { amount: 0, decimals: 1 },
   burn: { amount: 0 }, burn_checked: { amount: 0, decimals: 1 },
-  approve: { amount: 0 }, approve_checked: { amount: 0, decimals: 1 }
+  approve: { amount: 0 }, approve_checked: { amount: 0, decimals: 1 },
+  // token::initialize_mint(ctx, decimals, authority, freeze_authority) -> decimals is the first non-ctx arg.
+  initialize_mint: { decimals: 0 }, initialize_mint2: { decimals: 0 }
+};
+
+/**
+ * Anchor wrapper calls that pass an additional role-typed value (not an amount/decimals) after ctx:
+ *   token::set_authority(ctx, authority_type, new_authority)
+ *   token::initialize_mint(ctx, decimals, authority, freeze_authority)
+ * Positions are relative to the struct match's argument base, same convention as WRAPPER_VALUE_INDEX.
+ */
+const WRAPPER_ROLE_INDEX: Record<string, Array<{ role: keyof RoleResolution['bindings']; index: number }>> = {
+  set_authority: [{ role: 'newAuthority', index: 1 }],
+  initialize_mint: [{ role: 'authority', index: 1 }],
+  initialize_mint2: [{ role: 'authority', index: 1 }]
 };
 
 export function buildAssetFlows(programs: ProgramUnit[]): void {
+  const byName = new Map(programs.map(program => [program.name, program]));
   for (const program of programs) {
     const flows: TokenAssetFlow[] = [];
     for (const instruction of program.instructions) {
@@ -114,12 +168,22 @@ export function buildAssetFlows(programs: ProgramUnit[]): void {
       const instructionId = instruction.id ?? instruction.name;
       const contextAccounts = contextAccountsFor(program, instruction.contextType);
       const seenCpis = new Set<string>();
-      for (const cpiId of surface.cpis) {
-        if (seenCpis.has(cpiId)) continue;
-        seenCpis.add(cpiId);
-        const cpi = program.securitySurface.cpiSites.find(site => site.id === cpiId);
-        if (!cpi || !isTokenCpi(cpi)) continue;
-        flows.push(buildFlow(program, instructionId, cpi, surface.directHandler ?? '', contextAccounts));
+      const collect = (owner: ProgramUnit, cpiIds: string[]): void => {
+        for (const cpiId of cpiIds) {
+          const key = `${owner.name}:${cpiId}`;
+          if (seenCpis.has(key)) continue;
+          seenCpis.add(key);
+          const cpi = owner.securitySurface.cpiSites.find(site => site.id === cpiId);
+          if (!cpi || !isTokenCpi(cpi)) continue;
+          const witness = (surface.witnesses ?? []).find(item => item.targetKind === 'cpi' && item.targetProgram === owner.name && item.targetId === cpiId);
+          const sameProgram = owner === program;
+          flows.push(buildFlow(program, owner, instructionId, cpi, sameProgram ? contextAccounts : [], witness, sameProgram));
+        }
+      };
+      collect(program, surface.cpis);
+      for (const cross of surface.crossPackageSurfaces ?? []) {
+        const owner = byName.get(cross.program);
+        if (owner) collect(owner, cross.cpiIds);
       }
     }
     program.assetFlows = flows.sort((a, b) => a.id.localeCompare(b.id));
@@ -127,45 +191,71 @@ export function buildAssetFlows(programs: ProgramUnit[]): void {
   }
 }
 
+/**
+ * Eligible when a CPI is positively classified as SPL Token, Token-2022, or the Associated
+ * Token Program AND its documented operation category is asset-flow-relevant. Initialization
+ * is admitted only for the specific native constructors this module role-models; other
+ * `initialize_*` instructions remain visible as CPI sites without a fabricated flow.
+ */
 function isTokenCpi(cpi: CpiSite): boolean {
-  return !!cpi.operationCategory && TOKEN_CATEGORIES.includes(cpi.operationCategory)
-    && !!cpi.targetKind && (cpi.targetKind === 'spl-token' || cpi.targetKind === 'token-2022');
+  if (!cpi.operationCategory || !cpi.targetKind) return false;
+  if (cpi.targetKind !== 'spl-token' && cpi.targetKind !== 'token-2022' && cpi.targetKind !== 'associated-token') return false;
+  if (cpi.operationCategory === 'initialization') return MODELED_INITIALIZE_OPERATIONS.has(operationOf(cpi));
+  return TOKEN_CATEGORIES.includes(cpi.operationCategory);
 }
 
 function contextAccountsFor(program: ProgramUnit, contextType: string | undefined): AccountInfo[] {
   return contextType ? program.accounts.filter(account => account.contextType === contextType) : [];
 }
 
-function buildFlow(program: ProgramUnit, instructionId: string, cpi: CpiSite, handler: string, contextAccounts: AccountInfo[]): TokenAssetFlow {
+function buildFlow(
+  program: ProgramUnit, owner: ProgramUnit, instructionId: string, cpi: CpiSite,
+  contextAccounts: AccountInfo[], witness: ReachabilityWitness | undefined, sameProgram: boolean
+): TokenAssetFlow {
   const evidence: Evidence[] = [...cpi.evidence];
   const unresolvedReasons: string[] = [];
   const apiShort = cpi.invocationApi?.split(/::|\./).at(-1)?.replace(/::<.*$/, '') ?? '';
   const operationKey = operationOf(cpi);
   const roles = resolveRoles(cpi, apiShort, operationKey, contextAccounts, unresolvedReasons, evidence);
-  const authorityType = resolveAuthorityType(program, cpi, roles, unresolvedReasons, evidence);
+  const authorityType = resolveAuthorityType(owner, cpi, roles, unresolvedReasons, evidence);
+  const functionPath = witness?.functionPath ?? [];
+  const callPath = witness?.callPath ?? [];
+  if (!witness) unresolvedReasons.push('deterministic call-path evidence for this CPI is unavailable');
+  if (!sameProgram) evidence.push({ description: `Cross-package CPI reached through ${owner.name}; account roles are scoped to ${owner.name} and are not bound to ${program.name} instruction accounts`, location: cpi.location });
   const complete = !unresolvedReasons.length;
-  const id = `asset-flow:${program.name}:${instructionId}:${cpi.id ?? `${cpi.location.uri}:${cpi.location.startLine}:${cpi.location.startColumn}`}`;
+  const id = `asset-flow:${program.name}:${instructionId}:${sameProgram ? '' : `${owner.name}:`}${cpi.id ?? `${cpi.location.uri}:${cpi.location.startLine}:${cpi.location.startColumn}`}`;
   return {
     id,
     instructionId,
     program: program.name,
-    cpiId: cpi.id,
-    direct: !!cpi.functionName && cpi.functionName === handler.split('::').at(-1),
+    cpiId: sameProgram ? cpi.id : undefined,
+    // functionPath.length === 1 means the CPI sits directly in the handler with no intervening
+    // calls; an EMPTY path means witness evidence is unavailable and must never default to "direct".
+    direct: sameProgram && functionPath.length === 1,
     operation: cpi.operation,
     operationCategory: cpi.operationCategory,
-    tokenProgram: cpi.targetKind === 'token-2022' ? 'token-2022' : 'spl-token',
+    tokenProgram: tokenProgramOf(cpi.targetKind),
     ...roles.bindings,
+    amount: roles.amount,
+    decimals: roles.decimals,
     authorityType,
     pdaSigned: cpi.pdaSigned,
-    signerPdaIds: [...(cpi.signerPdaIds ?? [])],
-    functionPath: [],
-    callPath: [],
+    signerPdaIds: sameProgram ? [...(cpi.signerPdaIds ?? [])] : [],
+    functionPath,
+    callPath,
     location: cpi.location,
     confidence: cpi.confidence,
     evidence,
     complete,
     unresolvedReasons
   };
+}
+
+function tokenProgramOf(targetKind: CpiSite['targetKind']): TokenProgramKind | undefined {
+  if (targetKind === 'token-2022') return 'token-2022';
+  if (targetKind === 'associated-token') return 'associated-token';
+  if (targetKind === 'spl-token') return 'spl-token';
+  return undefined;
 }
 
 interface RoleResolution {
@@ -188,6 +278,10 @@ function resolveRoles(
       return empty;
     }
     const bindings = bindNamedFields(structMatch.fields, fieldMap, contextAccounts, unresolvedReasons, evidence, cpi.location);
+    for (const roleIndex of WRAPPER_ROLE_INDEX[operationKey] ?? []) {
+      const value = nthArgument(cpi, structMatch.argumentBase + roleIndex.index);
+      if (value !== undefined && value.trim()) bindings[roleIndex.role] = bind(value, contextAccounts, roleIndex.role, unresolvedReasons, evidence, cpi.location);
+    }
     const valueIndexes = WRAPPER_VALUE_INDEX[operationKey] ?? {};
     evidence.push({ description: `roles resolved from ${apiShort || 'CPI'} account struct ${structMatch.struct}`, location: cpi.location });
     return {
@@ -206,7 +300,7 @@ function resolveRoles(
     }
     const bindings: RoleResolution['bindings'] = {};
     roleNames.forEach((role, index) => {
-      if (role === 'program') return;
+      if (!role || role === 'program') return;
       const value = native.arguments[index];
       if (value === undefined) return;
       bindings[role as keyof RoleResolution['bindings']] = bind(value, contextAccounts, role, unresolvedReasons, evidence, cpi.location);
@@ -242,8 +336,14 @@ function bind(expression: string, contextAccounts: AccountInfo[], role: string, 
   // Accessor suffixes (.to_account_info(), .key(), &) do not change which
   // instruction account an expression refers to; the base identifier does.
   const trimmed = expression.trim();
-  const base = /^&?(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.exec(trimmed)?.[1];
-  const contextName = /^ctx\.accounts\.([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmed)?.[1];
+  // Option<&Pubkey> arguments (e.g. set_authority's new_authority, initialize_mint's
+  // freeze_authority) are commonly passed wrapped as `Some(...)`; unwrap one layer for
+  // matching only. The original expression is always preserved as evidence.
+  const unwrapped = unwrapSome(trimmed);
+  const base = /^&?(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.exec(unwrapped)?.[1];
+  // Raw Pubkey arguments to native/anchor-wrapper calls are commonly passed as
+  // `&ctx.accounts.x.key()`; a leading reference must not block the ctx.accounts prefix match.
+  const contextName = /^&?ctx\.accounts\.([A-Za-z_][A-Za-z0-9_]*)/.exec(unwrapped)?.[1];
   const name = contextName ?? base;
   const account = name ? contextAccounts.find(item => item.name === name) : undefined;
   if (!account?.id) {
@@ -305,24 +405,32 @@ function operationOf(cpi: CpiSite): string {
 /**
  * Authority kind requires positive evidence: a signer-flagged bound account,
  * or a proven signer PDA linked to this CPI. A non-signer authority is never
- * inferred to be a PDA without derivation/signing evidence.
+ * inferred to be a PDA without derivation/signing evidence. The authority
+ * account is looked up strictly through the already-resolved binding's
+ * accountId (never a program-wide name search), because the same account
+ * name can legitimately appear in multiple, unrelated instruction contexts.
  */
 function resolveAuthorityType(
-  program: ProgramUnit, cpi: CpiSite,
+  owner: ProgramUnit, cpi: CpiSite,
   roles: RoleResolution, unresolvedReasons: string[], evidence: Evidence[]
 ): TokenAssetAuthorityType {
-  const expression = roles.bindings.authority?.expression;
-  if (!expression) return 'unresolved';
-  const trimmed = expression.trim();
-  const base = /^&?(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.exec(trimmed)?.[1];
-  const name = /^ctx\.accounts\.([A-Za-z_][A-Za-z0-9_]*)/.exec(trimmed)?.[1] ?? base;
-  const account = name ? uniqueAccountByName(program, name) : undefined;
-  if (account?.signer) {
+  const authority = roles.bindings.authority;
+  if (!authority?.expression) return 'unresolved';
+  if (!authority.resolved || !authority.accountId) {
+    unresolvedReasons.push(`authority kind for \`${authority.expression}\` could not be established: the authority account binding is unresolved`);
+    return 'unresolved';
+  }
+  const account = owner.accounts.find(item => item.id === authority.accountId);
+  if (!account) {
+    unresolvedReasons.push(`authority kind for \`${authority.expression}\` could not be established: bound account ${authority.accountId} was not found`);
+    return 'unresolved';
+  }
+  if (account.signer) {
     evidence.push({ description: `authority account ${account.name} carries a signer flag`, location: cpi.location });
     return 'signer-account';
   }
   if ((cpi.signerPdaIds ?? []).length) {
-    const pdas = (cpi.signerPdaIds ?? []).map(id => program.securitySurface.pdaSites.find(pda => pda.id === id)).filter((pda): pda is NonNullable<typeof pda> => !!pda);
+    const pdas = (cpi.signerPdaIds ?? []).map(id => owner.securitySurface.pdaSites.find(pda => pda.id === id)).filter((pda): pda is NonNullable<typeof pda> => !!pda);
     if (pdas.length) {
       evidence.push({ description: `invoke_signed evidence with proven signer PDA(s) ${pdas.map(pda => pda.id).join(', ')}`, location: cpi.location });
       return 'pda';
@@ -331,22 +439,25 @@ function resolveAuthorityType(
   // A signed CPI whose authority account itself carries PDA derivation evidence:
   // the authority is that derived PDA. Requires BOTH invoke_signed-style signing
   // evidence on the site and derivation evidence on the account — never either alone.
-  if ((cpi.signerPdaIds ?? []).length === 0 && cpi.pdaSigned && account?.pdaId && program.securitySurface.pdaSites.some(pda => pda.id === account.pdaId)) {
+  if ((cpi.signerPdaIds ?? []).length === 0 && cpi.pdaSigned && account.pdaId && owner.securitySurface.pdaSites.some(pda => pda.id === account.pdaId)) {
     evidence.push({ description: `signed CPI authority ${account.name} carries PDA derivation evidence (${account.pdaId})`, location: cpi.location });
     return 'pda';
   }
-  if (account) {
-    evidence.push({ description: `authority account ${account.name} has no signer flag and no PDA signing evidence`, location: cpi.location });
-    return 'ordinary-account';
-  }
-  unresolvedReasons.push(`authority kind for \`${expression}\` could not be established from available evidence`);
-  return 'unresolved';
-}
-
-function uniqueAccountByName(program: ProgramUnit, name: string): AccountInfo | undefined {
-  const matches = program.accounts.filter(account => account.name === name);
-  if (matches.length === 1) return matches[0];
-  return matches.length ? matches.find(account => !!account.contextType) : undefined;
+  evidence.push({ description: `authority account ${account.name} has no signer flag and no PDA signing evidence`, location: cpi.location });
+  return 'ordinary-account';
 }
 
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** Unwraps a single balanced `Some(...)` wrapper around an Option<&Pubkey>-style argument. */
+function unwrapSome(value: string): string {
+  const match = /^Some\s*\(([\s\S]*)\)$/.exec(value);
+  if (!match) return value;
+  const inner = match[1];
+  let depth = 0;
+  for (let index = 0; index < inner.length; index++) {
+    if (inner[index] === '(') depth++;
+    else if (inner[index] === ')') { if (depth === 0) return value; depth--; }
+  }
+  return depth === 0 ? inner.trim() : value;
+}

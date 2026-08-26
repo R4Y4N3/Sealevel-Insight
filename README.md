@@ -11,7 +11,7 @@ npm install
 npm run typecheck
 npm test
 npm run package
-code --install-extension sealevel-insight-0.7.0.vsix
+code --install-extension sealevel-insight-0.7.2.vsix
 ```
 
 Open a Rust workspace and run **Sealevel Insight: Analyze Workspace**. The Explorer, CodeLens, hovers, Problems diagnostics, and offline report use the same cached analysis model.

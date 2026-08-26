@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.2
+
+- Declared explicit Restricted Mode support and local-filesystem-only virtual workspace behavior in the extension manifest.
+- Replaced the report webview's predictable nonce with a cryptographically random nonce.
+- Removed `unsafe-inline` from standalone report exports by deriving deterministic SHA-256 CSP hashes from the final inline style and script content.
+- Strengthened packaged-VSIX verification so release artifacts must retain explicit activation and workspace capability metadata.
+
+## 0.7.1
+
+- Added explicit activation events for every contributed command and Explorer view to harden Marketplace compatibility.
+- Corrected the Marketplace publisher and public support metadata.
+- Strengthened VSIX verification against missing activation metadata and development-only artifacts.
+
 ## 0.7.0
 
 - Added Token & Asset Flow v2: evidence-backed per-instruction token/asset flows with operation, token program, source/destination/mint/authority/delegate/new-authority roles, amount/decimals expressions, authority type, PDA signing correlation, direct/transitive path classification, completeness status, and explicit unresolved reasons.

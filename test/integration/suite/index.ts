@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 void (async () => {
-  const extension = vscode.extensions.getExtension('sealevel-insight.sealevel-insight')
+  const extension = vscode.extensions.getExtension('R4Y4N3.sealevel-insight')
     ?? vscode.extensions.all.find(item => item.packageJSON?.name === 'sealevel-insight');
   if (!extension) throw new Error('Sealevel Insight extension was not loaded.');
   await extension.activate();

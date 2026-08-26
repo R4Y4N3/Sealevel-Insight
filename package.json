@@ -11,7 +11,7 @@
     "sealevel-insight": "./dist/cli.js"
   },
   "version": "0.7.0",
-  "publisher": "sealevel-insight",
+  "publisher": "R4Y4N3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -209,25 +209,37 @@
         },
         "sealevelInsight.cfgOptions": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Explicit rustc cfg options, ideally copied from rustc --print cfg --target <target>."
         },
         "sealevelInsight.cfgKnowledge": {
           "type": "string",
-          "enum": ["partial", "complete"],
+          "enum": [
+            "partial",
+            "complete"
+          ],
           "default": "partial",
           "description": "Whether cfgOptions is partial evidence or a complete compiler-emitted set. Only complete mode treats absent options as false."
         },
         "sealevelInsight.compilationMode": {
           "type": "string",
-          "enum": ["normal", "test"],
+          "enum": [
+            "normal",
+            "test"
+          ],
           "default": "normal",
           "description": "Controls cfg(test) evaluation for semantic reachability."
         },
         "sealevelInsight.debugAssertions": {
           "type": "string",
-          "enum": ["unknown", "enabled", "disabled"],
+          "enum": [
+            "unknown",
+            "enabled",
+            "disabled"
+          ],
           "default": "unknown",
           "description": "Controls cfg(debug_assertions); unknown preserves the branch as unresolved evidence."
         }

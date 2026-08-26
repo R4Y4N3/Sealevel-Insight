@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
+import { randomBytes } from 'node:crypto';
 import { WorkspaceReport } from '../model/report';
 import { reportHtml } from '../report/reportBuilder';
 import { isWebviewMessage } from './messageProtocol';
 
 export function showReport(report: WorkspaceReport): void {
   const panel = vscode.window.createWebviewPanel('sealevelInsightReport', 'Sealevel Insight', vscode.ViewColumn.One, { enableScripts: true, localResourceRoots: [] });
-  const nonce = `${Date.now()}${Math.random().toString(36).slice(2)}`;
+  const nonce = randomBytes(18).toString('base64');
   panel.webview.html = reportHtml(report, nonce);
   panel.webview.onDidReceiveMessage(message => {
     if (!isWebviewMessage(message)) return;

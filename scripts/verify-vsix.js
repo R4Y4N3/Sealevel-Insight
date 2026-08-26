@@ -27,4 +27,10 @@ if (!expectedActivationEvents.length) throw new Error('VSIX manifest does not co
 for (const event of expectedActivationEvents) {
   if (!activationEvents.has(event)) throw new Error(`VSIX manifest missing explicit activation event ${event}`);
 }
+if (manifest.capabilities?.untrustedWorkspaces?.supported !== true) {
+  throw new Error('VSIX manifest must explicitly support untrusted workspaces');
+}
+if (manifest.capabilities?.virtualWorkspaces?.supported !== false) {
+  throw new Error('VSIX manifest must explicitly declare virtual workspaces unsupported');
+}
 console.log(`verified ${archive} (v${version})`);

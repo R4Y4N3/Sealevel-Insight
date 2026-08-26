@@ -148,7 +148,7 @@ describe('Sealevel Insight v0.6 release semantics', () => {
   it('produces standalone HTML with strict offline CSP and sanitized embedded source', async () => {
     const report = await sampleReport('pub fn handler() {}'); report.workspace = { name: '</script><img src=x>', roots: ['/secret/root'] };
     const html = standaloneHtml(report);
-    assert.match(html, /default-src 'none'/); assert.match(html, /Audit Cockpit/); assert.match(html, /Instruction Dossiers/); assert.match(html, /Dispatch & Indirect Calls/); assert.match(html, /Recursion Components/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
+    assert.match(html, /default-src 'none'/); assert.match(html, /style-src 'sha256-[A-Za-z0-9+/=]+'/); assert.match(html, /script-src 'sha256-[A-Za-z0-9+/=]+'/); assert.doesNotMatch(html, /unsafe-inline|__INLINE_CSP__/); assert.match(html, /Audit Cockpit/); assert.match(html, /Instruction Dossiers/); assert.match(html, /Dispatch & Indirect Calls/); assert.match(html, /Recursion Components/); assert.match(html, /Cargo Dependency Graph/); assert.match(html, /State Relationship Graph/); assert.doesNotMatch(html, /<script>.*<\/script><img/s); assert.doesNotMatch(html, /(?:src|href)=["']https?:\/\//);
   });
 
   it('renders semantic coverage as a real percentage in Markdown', async () => {

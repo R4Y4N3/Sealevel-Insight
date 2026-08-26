@@ -59,6 +59,15 @@
     "onCommand:sealevelInsight.clearCache"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Sealevel Insight requires local filesystem paths for its bundled parser and Cargo workspace discovery."
+    }
+  },
   "contributes": {
     "views": {
       "explorer": [

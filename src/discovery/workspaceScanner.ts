@@ -1,16 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import { RustSourceInput } from '../analysis/analyzer';
+import { SourceInput } from '../analysis/analyzer';
 import { classifyPackage } from './cargoDiscovery';
 import { buildCargoGraph } from './cargoGraph';
 import { mapConcurrent } from '../utils/concurrency';
 import { AnalysisDiagnostic } from '../model/report';
 import { applyCargoMetadata } from './cargoMetadata';
+import { DEFAULT_SOURCE_GLOBS, sourceLanguage } from '../analysis/sourceLanguage';
 
-export async function scanWorkspace(): Promise<RustSourceInput[]> {
-  const includes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('includePatterns', ['**/*.rs']);
+export async function scanWorkspace(): Promise<SourceInput[]> {
+  const includes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('includePatterns', DEFAULT_SOURCE_GLOBS);
   const excludes = vscode.workspace.getConfiguration('sealevelInsight').get<string[]>('excludePatterns', ['**/.git/**', '**/target/**', '**/node_modules/**', '**/.anchor/**', '**/.real-world-cache/**', '**/.sealevel-insight-cache/**', '**/.vscode-test/**', '**/dist/**', '**/dist-integration/**', '**/dist-test/**']);
-  const configuredIncludes = Array.isArray(includes) ? includes.filter(pattern => typeof pattern === 'string' && pattern.length > 0) : ['**/*.rs'];
+  const configuredIncludes = Array.isArray(includes) ? includes.filter(pattern => typeof pattern === 'string' && pattern.length > 0) : DEFAULT_SOURCE_GLOBS;
   const validIncludes = [...new Set(configuredIncludes.flatMap(pattern => pattern.startsWith('**/') ? [pattern, pattern.slice(3)] : [pattern]))];
   const validExcludes = Array.isArray(excludes) ? excludes.filter(pattern => typeof pattern === 'string' && pattern.length > 0) : [];
   const exclude = validExcludes.length === 1 ? validExcludes[0] : `{${validExcludes.join(',')}}`;
@@ -26,16 +27,17 @@ export async function scanWorkspace(): Promise<RustSourceInput[]> {
   const scanDiagnostics: AnalysisDiagnostic[] = [];
   const results = await mapConcurrent(uris, concurrency, async uri => {
     const stat = await vscode.workspace.fs.stat(uri);
-    if (stat.size > maxFileSize) { scanDiagnostics.push({ id: `diagnostic:analysis:oversized:${uri.toString()}`, category: 'analysis', severity: 'info', message: `Skipped oversized Rust file (${stat.size} bytes > ${maxFileSize}).`, location: { uri: uri.toString(), startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); return undefined; }
+    if (stat.size > maxFileSize) { scanDiagnostics.push({ id: `diagnostic:analysis:oversized:${uri.toString()}`, category: 'analysis', severity: 'info', message: `Skipped oversized source file (${stat.size} bytes > ${maxFileSize}).`, location: { uri: uri.toString(), startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); return undefined; }
     const workspaceRelative = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
     if (!includeTests && /(^|\/)(tests?|benches?)(\/|$)/.test(workspaceRelative)) return undefined;
     const source = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
     const directory = packageRootFor(uri, packages);
-    if (directory) sourceByDirectory.set(directory, [...(sourceByDirectory.get(directory) ?? []), source]);
+    const language = sourceLanguage(uri.fsPath); if (!language) return undefined;
+    if (directory && language === 'rust') sourceByDirectory.set(directory, [...(sourceByDirectory.get(directory) ?? []), source]);
     const packageRoot = [...packages.keys()].filter(root => uri.fsPath.startsWith(`${root}${path.sep}`)).sort((a, b) => b.length - a.length)[0];
     const packageInfo = packageRoot ? packages.get(packageRoot) : undefined;
     const classification = classifyPackage(packageInfo?.manifest ?? '', source);
-    return { uri: uri.toString(), source, packageName: packageInfo ? manifestName(packageInfo.manifest) : packageName(uri.fsPath), packageKind: classification.kind, packageEvidence: classification.evidence, manifestUri: packageInfo?.uri.toString() };
+    return { uri: uri.toString(), source, language, packageName: packageInfo ? manifestName(packageInfo.manifest) : language === 'rust' ? packageName(uri.fsPath) : path.basename(path.dirname(uri.fsPath)) || 'workspace', packageKind: language === 'rust' ? classification.kind : 'solana-program' as const, packageEvidence: language === 'rust' ? classification.evidence : [{ description: `${language} source discovered by configured source patterns` }], manifestUri: packageInfo?.uri.toString() };
   });
   const allSourcePaths = uris.map(uri => uri.fsPath);
   const graph = buildCargoGraph([...packages.values()].map(item => ({ uri: item.uri.fsPath, text: item.manifest, fileUris: allSourcePaths.filter(file => file === path.join(path.dirname(item.uri.fsPath), 'build.rs') || file.startsWith(`${path.dirname(item.uri.fsPath)}${path.sep}`)) })), sourceByDirectory);

@@ -127,7 +127,8 @@ export function validateReport(report: WorkspaceReport): AnalysisDiagnostic[] {
     if (scope.assetFlows !== undefined && scope.assetFlows !== assetFlowCount) add(`Audit manifest asset flow count ${scope.assetFlows} does not match detailed records (${assetFlowCount})`, 'manifest-asset-flows');
   }
   const expected = {
-    rustFiles: report.files.length,
+    rustFiles: report.files.filter(file => (file.language ?? 'rust') === 'rust').length,
+    sourceFiles: report.files.length,
     functions: report.programs.reduce((sum, program) => sum + program.functions.length, 0),
     instructions: report.programs.reduce((sum, program) => sum + program.instructions.length, 0),
     accounts: report.programs.reduce((sum, program) => sum + program.accounts.length, 0),

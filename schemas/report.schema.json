@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/R4Y4N3/Sealevel-Insight/schemas/report.schema.json",
-  "title": "Sealevel Insight Report 0.7.0",
+  "title": "Sealevel Insight Report 0.8.0",
   "type": "object",
   "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
   "properties": {
-    "schemaVersion": { "const": "0.7.0" },
+    "schemaVersion": { "const": "0.8.0" },
     "tool": {
       "type": "object",
       "required": ["name", "version"],
-      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.7.0" } },
+      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.8.0" } },
       "additionalProperties": false
     },
     "generatedAt": { "type": "string", "minLength": 1 },
@@ -45,7 +45,7 @@
       "type": "object",
       "required": ["uri", "lines", "codeLines", "commentLines", "blankLines", "functions", "structs", "enums", "traits", "implBlocks", "unsafeBlocks", "macroInvocations"],
       "properties": {
-        "uri": { "type": "string" }, "lines": { "type": "integer", "minimum": 0 }, "codeLines": { "type": "integer", "minimum": 0 },
+        "uri": { "type": "string" }, "language": { "enum": ["rust", "solang-solidity", "sbf-assembly"] }, "lines": { "type": "integer", "minimum": 0 }, "codeLines": { "type": "integer", "minimum": 0 },
         "commentLines": { "type": "integer", "minimum": 0 }, "blankLines": { "type": "integer", "minimum": 0 },
         "functions": { "type": "integer", "minimum": 0 }, "structs": { "type": "integer", "minimum": 0 },
         "enums": { "type": "integer", "minimum": 0 }, "traits": { "type": "integer", "minimum": 0 },
@@ -57,7 +57,7 @@
       "type": "object",
       "required": ["name", "rustFiles", "functions", "instructions", "accounts", "frameworkEvidence", "securitySurface"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 }, "cargoMetadataId": { "type": "string" }, "rustFiles": { "type": "array", "items": { "$ref": "#/$defs/file" } },
+        "name": { "type": "string", "minLength": 1 }, "sourceLanguage": { "enum": ["rust", "solang-solidity", "sbf-assembly"] }, "sourceFiles": { "type": "array", "items": { "$ref": "#/$defs/file" } }, "cargoMetadataId": { "type": "string" }, "rustFiles": { "type": "array", "items": { "$ref": "#/$defs/file" } },
         "functions": { "type": "array", "items": { "$ref": "#/$defs/function" } }, "instructions": { "type": "array", "items": { "$ref": "#/$defs/instruction" } }, "accounts": { "type": "array", "items": { "$ref": "#/$defs/account" } },
         "frameworkEvidence": { "type": "array", "items": { "$ref": "#/$defs/frameworkEvidence" } },
         "instructionDossiers": { "type": "array", "items": { "$ref": "#/$defs/instructionDossier" } },
@@ -228,7 +228,7 @@
       "type": "object",
       "required": ["rustFiles", "loc", "codeLoc", "blankLines", "commentLines", "functions", "instructions", "accounts", "signerSignals", "writableSignals", "rawOrUncheckedAccounts", "pdas", "cpis", "pdaSignedCpis", "unsafeBlocks"],
       "properties": {
-        "rustFiles": { "type": "integer", "minimum": 0 }, "loc": { "type": "integer", "minimum": 0 }, "codeLoc": { "type": "integer", "minimum": 0 },
+        "rustFiles": { "type": "integer", "minimum": 0 }, "sourceFiles": { "type": "integer", "minimum": 0 }, "solidityFiles": { "type": "integer", "minimum": 0 }, "assemblyFiles": { "type": "integer", "minimum": 0 }, "loc": { "type": "integer", "minimum": 0 }, "codeLoc": { "type": "integer", "minimum": 0 },
         "blankLines": { "type": "integer", "minimum": 0 }, "commentLines": { "type": "integer", "minimum": 0 }, "functions": { "type": "integer", "minimum": 0 },
         "instructions": { "type": "integer", "minimum": 0 }, "accounts": { "type": "integer", "minimum": 0 }, "signerSignals": { "type": "integer", "minimum": 0 },
         "writableSignals": { "type": "integer", "minimum": 0 }, "rawOrUncheckedAccounts": { "type": "integer", "minimum": 0 }, "pdas": { "type": "integer", "minimum": 0 },

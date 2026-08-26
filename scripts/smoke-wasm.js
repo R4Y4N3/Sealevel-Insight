@@ -1,4 +1,4 @@
-// Smoke test v4: parse Rust with web-tree-sitter + rust grammar WASM.
+// Smoke test v5: parse Rust and Solidity with the shipped Web Tree-sitter grammars.
 const path = require('node:path');
 const { Parser, Language } = require('web-tree-sitter');
 
@@ -30,5 +30,11 @@ async function main() {
       'start', m.startPosition.row + ':' + m.startPosition.column);
   }
   console.log('attrs:', tree.rootNode.descendantsOfType('attribute_item').map(a => a.text).join(' | '));
+  const solidity = new Parser();
+  solidity.setLanguage(await Language.load('resources/parsers/tree-sitter-solidity.wasm'));
+  const solidityTree = solidity.parse("import 'solana'; contract Vault { function run() public {} }");
+  const contract = solidityTree.rootNode.descendantsOfType('contract_declaration')[0];
+  if (!contract || contract.childForFieldName('name')?.text !== 'Vault') throw new Error('Solidity grammar smoke test did not extract Vault');
+  console.log('solidity contract:', contract.childForFieldName('name')?.text, 'hasError:', solidityTree.rootNode.hasError);
 }
 main().catch(e => { console.error(e); process.exit(1); });

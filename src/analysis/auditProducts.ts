@@ -152,7 +152,7 @@ function buildAuditManifest(report: WorkspaceReport): AuditManifest {
     },
     programs: programs.map(program => ({
       program: program.name, packageId: program.packageId, packageKind: program.packageKind, programId: program.identity?.programId,
-      frameworks: sorted(program.frameworkEvidence.map(item => item.framework)), sourceFiles: sorted(program.rustFiles.map(item => item.uri)),
+      frameworks: sorted(program.frameworkEvidence.map(item => item.framework)), sourceFiles: sorted((program.sourceFiles ?? program.rustFiles).map(item => item.uri)),
       instructionDossierIds: sorted((program.instructionDossiers ?? []).map(item => item.id)), stateFlowIds: sorted((program.stateFlows ?? []).map(item => item.id)),
       externalProgramIds: sorted((program.externalPrograms ?? []).map(item => `${program.name}:${item.id}`)),
       dependencyCount: program.packageDependencies?.length ?? 0, reviewScore: program.reviewComplexity?.score ?? 0,

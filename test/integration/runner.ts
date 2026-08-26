@@ -12,7 +12,7 @@ export async function run(): Promise<void> {
   if (!discovered.length) throw new Error(`VS Code fixture discovery failed; workspace roots: ${(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath).join(', ')}`);
   const report = await vscode.commands.executeCommand<{ schemaVersion: string; generatedAt: string; files: unknown[]; programs: Array<{ instructions: unknown[] }> }>('sealevelInsight.analyzeWorkspace');
   if (!report) throw new Error('Analysis command returned no report.');
-  if (report.schemaVersion !== '0.7.0' || !Array.isArray(report.files) || !report.programs[0]?.instructions.length) throw new Error(`Analysis returned an incomplete report: ${JSON.stringify(report)}`);
+  if (report.schemaVersion !== '0.8.0' || !Array.isArray(report.files) || !report.programs[0]?.instructions.length) throw new Error(`Analysis returned an incomplete report: ${JSON.stringify(report)}`);
   const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'lib.rs'));
   await vscode.window.showTextDocument(document);
   const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', document.uri);

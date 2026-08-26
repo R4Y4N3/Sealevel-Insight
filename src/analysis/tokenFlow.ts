@@ -136,6 +136,20 @@ const BUILDER_AMOUNT_INDEX: Record<string, number> = {
   transfer: 3, mint_to: 3, burn: 2, approve: 3
 };
 
+/** Solang's built-in SplToken interface has no explicit program-id argument. */
+const SOLANG_SIGNATURES: Record<string, string[]> = {
+  transfer: ['source', 'destination', 'authority'], transfer_checked: ['source', 'mint', 'destination', 'authority'],
+  mint_to: ['mint', 'destination', 'authority'], mint_to_checked: ['mint', 'destination', 'authority'],
+  burn: ['source', 'mint', 'authority'], burn_checked: ['source', 'mint', 'authority'],
+  close_account: ['source', 'destination', 'authority'], approve: ['source', 'delegate', 'authority'],
+  approve_checked: ['source', 'mint', 'delegate', 'authority'], revoke: ['source', 'authority'],
+  freeze_account: ['source', 'mint', 'authority'], thaw_account: ['source', 'mint', 'authority']
+};
+const SOLANG_AMOUNT_INDEX: Record<string, { amount?: number; decimals?: number }> = {
+  transfer: { amount: 3 }, transfer_checked: { amount: 4, decimals: 5 }, mint_to: { amount: 3 }, mint_to_checked: { amount: 3, decimals: 4 },
+  burn: { amount: 3 }, burn_checked: { amount: 3, decimals: 4 }, approve: { amount: 3 }, approve_checked: { amount: 4, decimals: 5 }
+};
+
 /** anchor_spl wrapper calls pass (ctx, amount[, decimals]); the analyzer records them without ctx. */
 const WRAPPER_VALUE_INDEX: Record<string, { amount?: number; decimals?: number }> = {
   transfer: { amount: 0 }, transfer_checked: { amount: 0, decimals: 1 },
@@ -269,6 +283,15 @@ function resolveRoles(
   contextAccounts: AccountInfo[], unresolvedReasons: string[], evidence: Evidence[]
 ): RoleResolution {
   const empty: RoleResolution = { bindings: {} };
+  if (cpi.invocationApi?.startsWith('Solang SplToken.')) {
+    const signature = SOLANG_SIGNATURES[operationKey]; const args = cpi.accountArguments ?? [];
+    if (!signature) { unresolvedReasons.push(`Solang SplToken.${operationKey || 'unknown'} has no modeled role layout`); return empty; }
+    const bindings: RoleResolution['bindings'] = {};
+    signature.forEach((role, index) => { const value = args[index]; if (value !== undefined) bindings[role as keyof RoleResolution['bindings']] = bind(value, contextAccounts, role, unresolvedReasons, evidence, cpi.location); });
+    const values = SOLANG_AMOUNT_INDEX[operationKey] ?? {};
+    evidence.push({ description: `roles resolved from the documented Solang SplToken.${operationKey} argument order`, location: cpi.location });
+    return { bindings, amount: values.amount === undefined ? undefined : args[values.amount], decimals: values.decimals === undefined ? undefined : args[values.decimals] };
+  }
   // Strategy 1: Anchor CpiContext account-struct literal (named fields — strongest evidence).
   const structMatch = findAnchorStruct(cpi);
   if (structMatch) {
@@ -344,7 +367,8 @@ function bind(expression: string, contextAccounts: AccountInfo[], role: string, 
   // Raw Pubkey arguments to native/anchor-wrapper calls are commonly passed as
   // `&ctx.accounts.x.key()`; a leading reference must not block the ctx.accounts prefix match.
   const contextName = /^&?ctx\.accounts\.([A-Za-z_][A-Za-z0-9_]*)/.exec(unwrapped)?.[1];
-  const name = contextName ?? base;
+  const solangName = /^&?tx\.accounts\.([A-Za-z_][A-Za-z0-9_]*)(?:\.key)?/.exec(unwrapped)?.[1];
+  const name = contextName ?? solangName ?? base;
   const account = name ? contextAccounts.find(item => item.name === name) : undefined;
   if (!account?.id) {
     unresolvedReasons.push(`${role} expression \`${expression}\` could not be bound to a known instruction account`);

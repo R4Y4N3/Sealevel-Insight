@@ -1,4 +1,4 @@
-import { AccountInfo, ArchitectureEdge, ArchitectureNode, CompilationProfile, Evidence, FileMetric, FunctionMetric, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph } from '../model/report';
+import { AccountInfo, ArchitectureEdge, ArchitectureNode, CompilationProfile, Evidence, FileMetric, FunctionMetric, ProgramUnit, SecuritySurface, WorkspaceReport, PackageKind, WorkspaceGraph, SourceLanguage } from '../model/report';
 import { parseRust, ParsedRustFile } from '../parser/rustParser';
 import { descendants, field, nodeText, RustNode } from '../parser/rustAst';
 import { sourceComplexity } from './complexity';
@@ -26,48 +26,62 @@ import { attachReachabilityWitnesses } from './reachabilityWitness';
 import { enrichStateDataflow } from './stateDataflow';
 import { buildAssetFlows } from './tokenFlow';
 import { SCHEMA_VERSION, TOOL_VERSION } from '../core/version';
+import { sourceLanguage } from './sourceLanguage';
+import { analyzeSolang } from './solangFrontend';
+import { analyzeSbfAssembly } from './sbfAssemblyFrontend';
 
-export interface RustSourceInput { uri: string; source: string; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
-export interface AnalysisOptions { compilationProfile?: CompilationProfile; }
+export interface SourceInput { uri: string; source: string; language?: SourceLanguage; packageName?: string; packageId?: string; packageRoot?: string; manifestUri?: string; packageKind?: PackageKind; packageEvidence?: Evidence[]; workspaceGraph?: WorkspaceGraph; }
+/** @deprecated Use SourceInput. Retained for API compatibility. */
+export type RustSourceInput = SourceInput;
+export interface AnalysisOptions { compilationProfile?: CompilationProfile; solidityWasmPath?: string; }
 export class AnalysisCancelledError extends Error { constructor() { super('Analysis cancelled.'); this.name = 'AnalysisCancelledError'; } }
 
-export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string, runtimeWasmPath?: string, isCancelled: () => boolean = () => false, options: AnalysisOptions = {}): Promise<WorkspaceReport> {
+export async function analyzeSources(inputs: SourceInput[], wasmPath: string, runtimeWasmPath?: string, isCancelled: () => boolean = () => false, options: AnalysisOptions = {}): Promise<WorkspaceReport> {
   const compilationProfile = options.compilationProfile ? { ...options.compilationProfile, cfgOptions: [...new Set(options.compilationProfile.cfgOptions.map(item => item.trim()).filter(Boolean))].sort(), evidence: dedupeSemanticEvidence(options.compilationProfile.evidence) } : undefined;
-  const originalParsed = await mapConcurrent(inputs, 8, input => { if (isCancelled()) throw new AnalysisCancelledError(); return parseRust(input.uri, input.source, wasmPath, runtimeWasmPath); });
+  const rustInputs = inputs.filter(input => (input.language ?? sourceLanguage(input.uri) ?? 'rust') === 'rust');
+  const originalParsed = await mapConcurrent(rustInputs, 8, input => { if (isCancelled()) throw new AnalysisCancelledError(); return parseRust(input.uri, input.source, wasmPath, runtimeWasmPath); });
+  const frontendResults = await mapConcurrent(inputs.filter(input => ((input.language ?? sourceLanguage(input.uri)) ?? 'rust') !== 'rust'), 8, async input => {
+    if (isCancelled()) throw new AnalysisCancelledError(); const language = input.language ?? sourceLanguage(input.uri);
+    return language === 'solang-solidity' ? analyzeSolang(input, options.solidityWasmPath, runtimeWasmPath) : analyzeSbfAssembly(input);
+  });
   if (isCancelled()) throw new AnalysisCancelledError();
   const workspaceGraph = inputs.find(input => input.workspaceGraph)?.workspaceGraph;
   const cfgAnalyses = originalParsed.map((file, index) => {
-    const input = inputs[index]; const pkg = workspaceGraph?.packages.find(item => item.id === input.packageId || item.name === input.packageName);
+    const input = rustInputs[index]; const pkg = workspaceGraph?.packages.find(item => item.id === input.packageId || item.name === input.packageName);
     return file.tree ? analyzeConditionalCompilation(file.tree.rootNode, file.uri, file.source, pkg?.enabledFeatures, compilationProfile) : { source: file.source, inactiveItems: 0, unknownItems: 0, unknownPredicates: [], unknownRanges: [] } satisfies CfgFileAnalysis;
   });
   const parsed = await mapConcurrent(originalParsed, 8, async (file, index) => cfgAnalyses[index].source === file.source ? file : parseRust(file.uri, cfgAnalyses[index].source, wasmPath, runtimeWasmPath));
   const analysisDiagnostics = [
     ...originalParsed.filter(file => file.error).map((file, index) => ({ id: `diagnostic:parse:${index}`, severity: 'error' as const, category: 'parse' as const, message: file.error!, location: { uri: file.uri, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } })),
+    ...frontendResults.flatMap((result, index) => result.file.parseError ? [{ id: `diagnostic:parse:frontend:${index}`, severity: 'error' as const, category: 'parse' as const, message: result.file.parseError, location: { uri: result.file.uri, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }] : []),
     ...(workspaceGraph?.diagnostics ?? [])
   ];
-  const diagnostics = analysisDiagnostics.map(item => `${item.location?.uri ? `${item.location.uri}: ` : ''}${item.message}`);
+  const diagnostics = [...analysisDiagnostics.map(item => `${item.location?.uri ? `${item.location.uri}: ` : ''}${item.message}`), ...frontendResults.flatMap(result => result.diagnostics)];
   const programs = new Map<string, ProgramUnit>();
   const parsedByPackage = new Map<string, Array<{ uri: string; root: RustNode; packageName: string; packageRoot?: string }>>();
   const files: FileMetric[] = [];
   parsed.forEach((file, index) => {
-    const input = inputs[index];
+    const input = rustInputs[index];
     const metric = fileMetric(originalParsed[index]);
     files.push(metric);
     const name = input.packageName ?? packageFromUri(input.uri);
     const cargoPackage = workspaceGraph?.packages.find(pkg => pkg.id === input.packageId || pkg.name === name);
     const program = programs.get(name) ?? emptyProgram(name, input.manifestUri, input.packageKind, input.packageEvidence);
     if (cargoPackage) { program.rootUri = cargoPackage.rootUri; program.packageId = cargoPackage.id; program.cargoMetadataId = cargoPackage.metadataId; program.packageConfidence = cargoPackage.confidence; program.packageDependencies = cargoPackage.dependencies; }
-    program.rustFiles.push(metric);
+    program.rustFiles.push(metric); program.sourceFiles = program.rustFiles; program.sourceLanguage = 'rust';
     if (file.tree) extract(file, program);
     applyConditionalCompilation(program, file.uri, cfgAnalyses[index], cargoPackage?.enabledFeatures);
     if (file.tree) parsedByPackage.set(name, [...(parsedByPackage.get(name) ?? []), { uri: file.uri, root: file.tree.rootNode, packageName: name, packageRoot: input.packageRoot ?? cargoPackage?.rootUri }]);
     programs.set(name, program);
   });
+  files.push(...frontendResults.map(result => result.file));
+  for (const frontend of frontendResults) for (const program of frontend.programs) addUniqueProgram(programs, program);
   const list = [...programs.values()];
   for (const program of list) mergeInstructionEvidence(program);
   const symbolIndexes = new Map<string, RustSymbolIndex>();
   for (const program of list) {
     if (isCancelled()) throw new AnalysisCancelledError();
+    if (program.sourceLanguage && program.sourceLanguage !== 'rust') continue;
     const indexedFiles = parsedByPackage.get(program.name) ?? [];
     const symbolIndex = buildRustSymbolIndex(indexedFiles);
     symbolIndexes.set(program.name, symbolIndex);
@@ -77,7 +91,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
       if (symbol) { fn.qualifiedName = symbol.qualifiedName; symbol.cfgStatus = fn.cfgStatus; symbol.cfgPredicates = fn.cfgPredicates; }
     }
   }
-  for (const program of list) program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions, symbolIndexes.get(program.name));
+  for (const program of list) if (!program.sourceLanguage || program.sourceLanguage === 'rust') program.callGraph = buildCallGraph(parsedByPackage.get(program.name) ?? [], program.functions, symbolIndexes.get(program.name));
   resolveCrossPackageCalls(list, symbolIndexes);
   for (const program of list) {
     if (isCancelled()) throw new AnalysisCancelledError();
@@ -120,7 +134,7 @@ export async function analyzeSources(inputs: RustSourceInput[], wasmPath: string
     workspaceGraph,
     coverage: coverageFor(list, files),
     summary: {
-      rustFiles: files.length, loc: sum(files, 'lines'), codeLoc: sum(files, 'codeLines'), blankLines: sum(files, 'blankLines'), commentLines: sum(files, 'commentLines'),
+      rustFiles: files.filter(file => (file.language ?? 'rust') === 'rust').length, sourceFiles: files.length, solidityFiles: files.filter(file => file.language === 'solang-solidity').length, assemblyFiles: files.filter(file => file.language === 'sbf-assembly').length, loc: sum(files, 'lines'), codeLoc: sum(files, 'codeLines'), blankLines: sum(files, 'blankLines'), commentLines: sum(files, 'commentLines'),
       functions: list.reduce((n, p) => n + p.functions.length, 0), instructions: list.reduce((n, p) => n + p.instructions.length, 0), accounts: list.reduce((n, p) => n + p.accounts.length, 0),
       signerSignals: sumSurface(allSurface, 'signerSignals'), writableSignals: sumSurface(allSurface, 'writableSignals'), rawOrUncheckedAccounts: sumSurface(allSurface, 'rawOrUncheckedAccounts'),
       pdas: sumSurface(allSurface, 'pdaSites', true), cpis: sumSurface(allSurface, 'cpiSites', true), pdaSignedCpis: allSurface.reduce((n, s) => n + s.cpiSites.filter(cpi => cpi.pdaSigned).length, 0), unsafeBlocks: sumSurface(allSurface, 'unsafeBlocks'),
@@ -583,14 +597,14 @@ function propagateReachableSurface(program: ProgramUnit): void {
 }
 
 function propagateCrossPackageSurfaces(programs: ProgramUnit[]): void {
-  const parseTarget = (target: string | undefined): { program: ProgramUnit; functionName: string } | undefined => {
+  const parseTarget = (target: string | undefined, owner?: ProgramUnit): { program: ProgramUnit; functionName: string } | undefined => {
     if (!target) return undefined;
     const program = [...programs].sort((a, b) => b.name.length - a.name.length).find(item => target.startsWith(`${item.name}::`));
-    if (!program) return undefined; return { program, functionName: `crate::${target.slice(program.name.length + 2)}` };
+    if (!program || program === owner) return undefined; return { program, functionName: `crate::${target.slice(program.name.length + 2)}` };
   };
   for (const sourceProgram of programs) for (const instruction of sourceProgram.instructions) {
     const surface = instruction.reachableSurface; if (!surface || !sourceProgram.callGraph) continue;
-    const initial = sourceProgram.callGraph.calls.filter(call => surface.functions.includes(call.caller) && call.status === 'resolved').flatMap(call => { const parsed = parseTarget(call.target); return parsed ? [parsed] : []; });
+    const initial = sourceProgram.callGraph.calls.filter(call => surface.functions.includes(call.caller) && call.status === 'resolved').flatMap(call => { const parsed = parseTarget(call.target, sourceProgram); return parsed ? [parsed] : []; });
     if (!initial.length) { surface.crossPackageSurfaces = []; continue; }
     const queue = [...initial]; const visited = new Set<string>(); const missing: string[] = [];
     const groups = new Map<string, { program: ProgramUnit; functions: Set<string>; cpis: Set<string>; signedCpis: Set<string>; dynamicCpis: Set<string>; pdas: Set<string>; states: Set<string>; runtime: Set<string>; external: Set<string>; unresolved: Set<string>; ambiguous: Set<string>; evidence: Evidence[]; complexity: number; unsafe: number; cfgUnknown: number }>();
@@ -609,7 +623,7 @@ function propagateCrossPackageSurfaces(programs: ProgramUnit[]): void {
       for (const operation of current.program.runtimeOperations?.filter(item => item.functionName === fn.name && containsLocation(fn.location, item.location)) ?? []) group.runtime.add(operation.id);
       for (const call of current.program.callGraph?.calls.filter(item => item.caller === current.functionName) ?? []) {
         if (call.status === 'resolved' && call.target) {
-          const cross = parseTarget(call.target); if (cross) queue.push(cross); else if (call.target.startsWith('crate::')) queue.push({ program: current.program, functionName: call.target });
+          const cross = parseTarget(call.target, current.program); if (cross) queue.push(cross); else if (call.target.startsWith('crate::')) queue.push({ program: current.program, functionName: call.target });
         } else if (call.status === 'unresolved' || call.status === 'dynamic' || call.status === 'ambiguous') {
           (call.status === 'ambiguous' ? group.ambiguous : group.unresolved).add(call.id);
           details.push({ callId: call.id, expression: call.sourceExpression ?? call.callee, status: call.status, reason: call.resolutionReason ?? 'resolution evidence unavailable', candidates: [...(call.candidateTargets ?? [])], location: call.location });
@@ -637,13 +651,28 @@ function containsLocation(owner: import('../model/sourceLocation').SourceLocatio
 function dedupeSemanticEvidence(items: Evidence[]): Evidence[] { return [...new Map(items.map(item => [`${item.description}:${item.location?.uri ?? ''}:${item.location?.startLine ?? ''}`, item])).values()].sort((a, b) => `${a.location?.uri ?? ''}:${a.location?.startLine ?? 0}:${a.description}`.localeCompare(`${b.location?.uri ?? ''}:${b.location?.startLine ?? 0}:${b.description}`)); }
 
 function emptyProgram(name: string, manifestUri?: string, packageKind: PackageKind = 'unknown', packageEvidence: Evidence[] = []): ProgramUnit {
-  return { name, manifestUri, packageKind, packageEvidence, rustFiles: [], functions: [], instructions: [], accounts: [], frameworkEvidence: [], securitySurface: { signerSignals: 0, writableSignals: 0, ownerValidationSignals: 0, addressValidationSignals: 0, remainingAccounts: 0, rawOrUncheckedAccounts: 0, manualAccountIteration: 0, unsafeBlocks: 0, manualSignerChecks: 0, manualOwnerChecks: 0, manualWritableChecks: 0, manualAddressChecks: 0, manualSerialization: 0, reallocOperations: 0, unsafeFunctions: 0, cpiSites: [], pdaSites: [] }, relationships: [], architecture: { nodes: [], edges: [] } };
+  return { name, manifestUri, packageKind, packageEvidence, sourceLanguage: 'rust', sourceFiles: [], rustFiles: [], functions: [], instructions: [], accounts: [], frameworkEvidence: [], securitySurface: { signerSignals: 0, writableSignals: 0, ownerValidationSignals: 0, addressValidationSignals: 0, remainingAccounts: 0, rawOrUncheckedAccounts: 0, manualAccountIteration: 0, unsafeBlocks: 0, manualSignerChecks: 0, manualOwnerChecks: 0, manualWritableChecks: 0, manualAddressChecks: 0, manualSerialization: 0, reallocOperations: 0, unsafeFunctions: 0, cpiSites: [], pdaSites: [] }, relationships: [], architecture: { nodes: [], edges: [] } };
 }
 
 function fileMetric(file: ParsedRustFile): FileMetric {
   const counts = countLines(file.source);
   const root = file.tree?.rootNode;
-  return { uri: file.uri, ...counts, functions: root ? descendants(root, 'function_item').length : 0, structs: root ? descendants(root, 'struct_item').length : 0, enums: root ? descendants(root, 'enum_item').length : 0, traits: root ? descendants(root, 'trait_item').length : 0, implBlocks: root ? descendants(root, 'impl_item').length : 0, unsafeBlocks: root ? descendants(root, 'unsafe_block').length : 0, macroInvocations: root ? descendants(root, 'macro_invocation').length : 0, attributes: root ? descendants(root, 'attribute_item').length : 0, useStatements: root ? descendants(root, 'use_declaration').length : 0, functionCalls: root ? descendants(root, 'call_expression').length : 0, methodCalls: root ? descendants(root, 'call_expression').filter(node => (node.childForFieldName('function')?.text ?? '').includes('.')).length : 0, matches: root ? descendants(root, 'match_expression').length : 0, loops: root ? descendants(root, ['loop_expression', 'while_expression', 'for_expression']).length : 0, parseError: file.error };
+  return { uri: file.uri, language: 'rust', ...counts, functions: root ? descendants(root, 'function_item').length : 0, structs: root ? descendants(root, 'struct_item').length : 0, enums: root ? descendants(root, 'enum_item').length : 0, traits: root ? descendants(root, 'trait_item').length : 0, implBlocks: root ? descendants(root, 'impl_item').length : 0, unsafeBlocks: root ? descendants(root, 'unsafe_block').length : 0, macroInvocations: root ? descendants(root, 'macro_invocation').length : 0, attributes: root ? descendants(root, 'attribute_item').length : 0, useStatements: root ? descendants(root, 'use_declaration').length : 0, functionCalls: root ? descendants(root, 'call_expression').length : 0, methodCalls: root ? descendants(root, 'call_expression').filter(node => (node.childForFieldName('function')?.text ?? '').includes('.')).length : 0, matches: root ? descendants(root, 'match_expression').length : 0, loops: root ? descendants(root, ['loop_expression', 'while_expression', 'for_expression']).length : 0, parseError: file.error };
+}
+
+function addUniqueProgram(programs: Map<string, ProgramUnit>, program: ProgramUnit): void {
+  const requested = program.name; if (!programs.has(requested)) { programs.set(requested, program); return; }
+  let index = 2; while (programs.has(`${requested}#${index}`)) index++; const name = `${requested}#${index}`;
+  const rewrite = (value: string | undefined) => value?.startsWith(`${requested}::`) ? `${name}${value.slice(requested.length)}` : value;
+  program.name = name;
+  for (const fn of program.functions) { fn.program = name; fn.qualifiedName = rewrite(fn.qualifiedName); }
+  for (const instruction of program.instructions) instruction.handler = rewrite(instruction.handler);
+  if (program.callGraph) {
+    program.callGraph.symbols = program.callGraph.symbols.map(item => rewrite(item)!);
+    for (const call of program.callGraph.calls) { call.caller = rewrite(call.caller)!; call.target = rewrite(call.target); call.callee = rewrite(call.callee)!; call.candidateTargets = call.candidateTargets?.map(item => rewrite(item)!); }
+    for (const edge of program.callGraph.edges) { edge.source = rewrite(edge.source)!; edge.target = rewrite(edge.target)!; }
+  }
+  programs.set(name, program);
 }
 
 function loc(uri: string, node: RustNode) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }

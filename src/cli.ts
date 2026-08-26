@@ -2,7 +2,7 @@
 import * as path from 'node:path';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { analyzeSources, RustSourceInput } from './analysis/analyzer';
+import { analyzeSources, SourceInput } from './analysis/analyzer';
 import { buildScope, ScopeConfig } from './core/scope';
 import { diffReports } from './core/diff';
 import { markdownReport, portableReport, standaloneHtml } from './core/serialization';
@@ -18,6 +18,7 @@ import { mapConcurrent } from './utils/concurrency';
 import { walkFiles } from './discovery/fileWalker';
 import { applyCargoMetadata } from './discovery/cargoMetadata';
 import { refreshAuditProducts } from './analysis/auditProducts';
+import { DEFAULT_SOURCE_GLOBS, sourceLanguage } from './analysis/sourceLanguage';
 
 interface CliAnalysisOptions { include: string[]; exclude: string[]; includeTests: boolean; enableIdl: boolean; cache: boolean; maxFileSize: number; cargoMetadata?: string; target?: string; cfgOptions: string[]; cfgKnowledge: 'partial' | 'complete'; compilationMode: 'normal' | 'test'; debugAssertions?: boolean; }
 
@@ -49,16 +50,16 @@ async function main(): Promise<void> {
 
 async function analyze(root: string, args: string[]): Promise<WorkspaceReport> {
   const config: CliAnalysisOptions = {
-    include: options(args, '--include').length ? options(args, '--include') : ['**/*.rs'],
+    include: options(args, '--include').length ? options(args, '--include') : DEFAULT_SOURCE_GLOBS,
     exclude: options(args, '--exclude').length ? options(args, '--exclude') : ['**/.git/**', '**/target/**', '**/node_modules/**', '**/dist/**', '**/dist-test/**', '**/.sealevel-insight-cache/**'],
     includeTests: args.includes('--include-tests'), enableIdl: args.includes('--enable-idl') || !args.includes('--disable-idl'), cache: !args.includes('--no-cache'),
     maxFileSize: numberOption(args, '--max-file-size', 5_242_880), cargoMetadata: option(args, '--cargo-metadata'), target: option(args, '--target'), cfgOptions: options(args, '--cfg'), cfgKnowledge: args.includes('--cfg-complete') ? 'complete' : 'partial', compilationMode: args.includes('--test-profile') ? 'test' : 'normal', debugAssertions: args.includes('--debug-assertions') ? true : args.includes('--no-debug-assertions') ? false : undefined
   };
-  const collected = await rustSources(root, config);
+  const collected = await sourceFiles(root, config);
   const cacheKey = analysisCacheKey(collected.sources, config); const cacheDir = cacheDirectory(root);
   if (config.cache) { const cached = await readAnalysisCache(cacheDir, cacheKey); if (cached) return cached; }
-  const wasm = path.resolve(__dirname, 'tree-sitter-rust.wasm'); const runtime = path.resolve(__dirname, 'tree-sitter.wasm');
-  const report = await analyzeSources(collected.sources, wasm, runtime, undefined, { compilationProfile: compilationProfile(config) });
+  const wasm = path.resolve(__dirname, 'tree-sitter-rust.wasm'); const solidityWasm = path.resolve(__dirname, 'tree-sitter-solidity.wasm'); const runtime = path.resolve(__dirname, 'tree-sitter.wasm');
+  const report = await analyzeSources(collected.sources, wasm, runtime, undefined, { compilationProfile: compilationProfile(config), solidityWasmPath: solidityWasm });
   report.workspace = { name: path.basename(root), roots: [root] };
   report.analysisDiagnostics?.push(...collected.diagnostics); report.diagnostics.push(...collected.diagnostics.map(item => item.message));
   const identityDiagnostics = await enrichProgramIdentities(root, report.programs); report.analysisDiagnostics?.push(...identityDiagnostics); report.diagnostics.push(...identityDiagnostics.map(item => item.message));
@@ -71,28 +72,28 @@ async function analyze(root: string, args: string[]): Promise<WorkspaceReport> {
   return report;
 }
 
-async function rustSources(root: string, config: CliAnalysisOptions): Promise<{ sources: RustSourceInput[]; diagnostics: AnalysisDiagnostic[] }> {
+async function sourceFiles(root: string, config: CliAnalysisOptions): Promise<{ sources: SourceInput[]; diagnostics: AnalysisDiagnostic[] }> {
   const excludePatterns = config.exclude.map(globRegex);
   const files = await walkFiles(root, { shouldDescend: relative => !excludePatterns.some(pattern => pattern.test(`${relative}/__sealevel_insight__`)) }); const diagnostics: AnalysisDiagnostic[] = [];
-  const rustFiles: string[] = [];
-  for (const file of files.filter(file => file.endsWith('.rs'))) {
+  const selectedFiles: string[] = [];
+  for (const file of files.filter(file => sourceLanguage(file))) {
     const relative = path.relative(root, file).split(path.sep).join('/');
     if (!config.include.some(pattern => globRegex(pattern).test(relative)) || config.exclude.some(pattern => globRegex(pattern).test(relative)) || !config.includeTests && /(^|\/)(tests?|benches?)(\/|$)/.test(relative)) continue;
     const size = (await stat(file)).size;
-    if (size > config.maxFileSize) { diagnostics.push({ id: `diagnostic:analysis:oversized:${relative}`, category: 'analysis', severity: 'info', message: `Skipped oversized Rust file ${relative} (${size} bytes > ${config.maxFileSize}).`, location: { uri: pathToFileURL(file).href, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); continue; }
-    rustFiles.push(file);
+    if (size > config.maxFileSize) { diagnostics.push({ id: `diagnostic:analysis:oversized:${relative}`, category: 'analysis', severity: 'info', message: `Skipped oversized source file ${relative} (${size} bytes > ${config.maxFileSize}).`, location: { uri: pathToFileURL(file).href, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); continue; }
+    selectedFiles.push(file);
   }
   const manifestFiles = files.filter(file => path.basename(file) === 'Cargo.toml' && !config.exclude.some(pattern => globRegex(pattern).test(path.relative(root, file).split(path.sep).join('/'))));
   const manifests = await mapConcurrent(manifestFiles, 8, async file => ({ uri: file, text: await readFile(file, 'utf8'), fileUris: files.filter(candidate => candidate === path.join(path.dirname(file), 'build.rs') || candidate.startsWith(`${path.dirname(file)}${path.sep}`)) }));
   const sourceByDirectory = new Map<string, string[]>();
-  for (const file of rustFiles) { const directory = nearestRoot(file, manifestFiles.map(path.dirname)); if (directory) sourceByDirectory.set(directory, [...(sourceByDirectory.get(directory) ?? []), await readFile(file, 'utf8')]); }
+  for (const file of selectedFiles.filter(file => sourceLanguage(file) === 'rust')) { const directory = nearestRoot(file, manifestFiles.map(path.dirname)); if (directory) sourceByDirectory.set(directory, [...(sourceByDirectory.get(directory) ?? []), await readFile(file, 'utf8')]); }
   const workspaceGraph = buildCargoGraph(manifests, sourceByDirectory);
   if (config.cargoMetadata) {
     const metadataPath = path.resolve(config.cargoMetadata);
     try { applyCargoMetadata(workspaceGraph, JSON.parse(await readFile(metadataPath, 'utf8')), metadataPath); }
     catch (error) { workspaceGraph.diagnostics.push({ id: `diagnostic:cargo:metadata:${metadataPath}`, category: 'cargo', severity: 'error', message: `Could not load saved Cargo metadata ${metadataPath}: ${error instanceof Error ? error.message : String(error)}`, location: { uri: metadataPath, startLine: 1, startColumn: 0, endLine: 1, endColumn: 0 } }); }
   }
-  const sources = await mapConcurrent(rustFiles, 8, async file => { const directory = nearestRoot(file, [...sourceByDirectory.keys()]); const pkg = workspaceGraph.packages.find(item => item.rootUri === directory); return { uri: pathToFileURL(file).href, source: await readFile(file, 'utf8'), packageName: pkg?.name ?? path.basename(path.dirname(path.dirname(file))), packageId: pkg?.id, packageRoot: pkg?.rootUri, packageKind: pkg?.kind, packageEvidence: pkg?.evidence, manifestUri: pkg?.manifestUri, workspaceGraph }; });
+  const sources = await mapConcurrent(selectedFiles, 8, async file => { const language = sourceLanguage(file)!; const directory = nearestRoot(file, [...sourceByDirectory.keys()]); const pkg = workspaceGraph.packages.find(item => item.rootUri === directory); const fallbackPackage = language === 'rust' ? path.basename(path.dirname(path.dirname(file))) : path.basename(path.dirname(file)); return { uri: pathToFileURL(file).href, source: await readFile(file, 'utf8'), language, packageName: pkg?.name ?? fallbackPackage, packageId: pkg?.id, packageRoot: pkg?.rootUri, packageKind: language === 'rust' ? pkg?.kind : 'solana-program' as const, packageEvidence: pkg?.evidence, manifestUri: pkg?.manifestUri, workspaceGraph }; });
   return { sources, diagnostics };
 }
 

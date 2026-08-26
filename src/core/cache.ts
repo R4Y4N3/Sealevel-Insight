@@ -5,8 +5,8 @@ import { RustSourceInput } from '../analysis/analyzer';
 import { WorkspaceReport } from '../model/report';
 import { SCHEMA_VERSION, TOOL_VERSION } from './version';
 
-export const CACHE_FORMAT_VERSION = '7';
-export const ANALYZER_VERSION_FINGERPRINT = 'rust-grammar:0.24.0;web-tree-sitter:0.25.10;framework-adapters:0.7.0;audit-products:2;reachability:2;witness-paths:1;compilation-profile:1;dispatch-indirect-calls:2;state-account-dataflow:2.1;pinocchio-account-view:0.11;quasar-framework-abi:2;steel-semantics:2;token-asset-flow:2';
+export const CACHE_FORMAT_VERSION = '8';
+export const ANALYZER_VERSION_FINGERPRINT = 'rust-grammar:0.24.0;solidity-grammar:1.2.13;web-tree-sitter:0.25.10;source-frontends:2;framework-adapters:0.7.0;audit-products:2;reachability:2;witness-paths:1;compilation-profile:1;dispatch-indirect-calls:2;state-account-dataflow:2.1;pinocchio-account-view:0.11;quasar-framework-abi:2;steel-semantics:2;token-asset-flow:2';
 
 export function analysisCacheKey(sources: RustSourceInput[], config: unknown): string {
   const hash = createHash('sha256');

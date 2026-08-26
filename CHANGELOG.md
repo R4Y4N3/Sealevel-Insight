@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0
+
+- Added an evidence-bounded Solang frontend for `.sol` sources: contract/program identity, public/external instructions and constructors, account annotations, PDA seeds/bumps, local calls, Solana external calls, SPL Token CPIs, events, metrics, and reachability evidence.
+- Added a deterministic hand-written sBPF assembly frontend for `.s`, `.S`, `.asm`, and `.sbpf`: entrypoints, function labels, direct and register-indirect calls, branch complexity, Solana syscalls, dynamic/signed CPIs, PDA derivation, and memory-access evidence.
+- Added conservative language detection that records metrics but refuses to classify ordinary EVM Solidity or generic assembly as a Solana program without multiple source-level signals.
+- Integrated non-Rust sources with workspace discovery, CLI/extension analysis, caches, reports, diffs, audit manifests, architecture, review hotspots, VSIX packaging, and source-language summaries while retaining backward-compatible `rustFiles` fields.
+- Bundled the Tree-sitter Solidity 1.2.13 WebAssembly grammar for fully local/offline parsing and added its complete MIT notice.
+
+## 0.7.3
+
+- Removed an obsolete, non-extension `allowScripts` manifest block that named development-only signing and keychain packages not shipped or used by Sealevel Insight.
+- Completed the bundled third-party notices for the TOML parser, Web Tree-sitter runtime, and Tree-sitter Rust grammar.
+- Clarified the confirmed Marketplace publisher identity and manual release policy in the packaged README.
+
 ## 0.7.2
 
 - Declared explicit Restricted Mode support and local-filesystem-only virtual workspace behavior in the extension manifest.

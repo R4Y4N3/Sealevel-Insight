@@ -1,5 +1,7 @@
 import { SourceLocation } from './sourceLocation';
 
+export type SourceLanguage = 'rust' | 'solang-solidity' | 'sbf-assembly';
+
 export interface FrameworkEvidence {
   framework: string;
   confidence: number;
@@ -27,6 +29,7 @@ export interface AccountRelation {
 
 export interface FileMetric {
   uri: string;
+  language?: SourceLanguage;
   lines: number;
   codeLines: number;
   commentLines: number;
@@ -662,6 +665,8 @@ export interface ProgramUnit {
   packageConfidence?: number;
   packageDependencies?: CargoDependency[];
   identity?: ProgramIdentity;
+  sourceLanguage?: SourceLanguage;
+  sourceFiles?: FileMetric[];
   rustFiles: FileMetric[];
   functions: FunctionMetric[];
   instructions: InstructionInfo[];
@@ -705,6 +710,9 @@ export interface WorkspaceReport {
   auditManifest?: AuditManifest;
   summary: {
     rustFiles: number;
+    sourceFiles?: number;
+    solidityFiles?: number;
+    assemblyFiles?: number;
     loc: number;
     codeLoc: number;
     blankLines: number;

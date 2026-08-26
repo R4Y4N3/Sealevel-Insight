@@ -16,10 +16,14 @@ async function main(): Promise<void> {
     const output = path.join(extensionDevelopmentPath, `report.${format === 'markdown' ? 'md' : format}`);
     execFileSync(process.execPath, [cli, 'analyze', fixture, '--format', format, '--output', output, '--no-cache']);
     const content = readFileSync(output, 'utf8');
-    if (format === 'json') { const report = JSON.parse(content); if (report.schemaVersion !== '0.7.0' || report.summary.instructions < 1) throw new Error('Packaged CLI JSON export is invalid.'); }
+    if (format === 'json') { const report = JSON.parse(content); if (report.schemaVersion !== '0.8.0' || report.summary.instructions < 1) throw new Error('Packaged CLI JSON export is invalid.'); }
     if (format === 'markdown' && !content.includes('# Sealevel Insight')) throw new Error('Packaged CLI Markdown export is invalid.');
     if (format === 'html' && (!content.includes("default-src 'none'") || !content.includes('<!doctype html>'))) throw new Error('Packaged CLI HTML export is invalid.');
   }
+  const nonRustOutput = path.join(extensionDevelopmentPath, 'non-rust.json');
+  execFileSync(process.execPath, [cli, 'analyze', path.resolve(repositoryRoot, 'test/fixtures/non-rust'), '--format', 'json', '--output', nonRustOutput, '--no-cache', '--disable-idl']);
+  const nonRust = JSON.parse(readFileSync(nonRustOutput, 'utf8'));
+  if (nonRust.summary.solidityFiles !== 1 || nonRust.summary.assemblyFiles !== 1 || !nonRust.programs.some((program: { sourceLanguage?: string }) => program.sourceLanguage === 'solang-solidity') || !nonRust.programs.some((program: { sourceLanguage?: string }) => program.sourceLanguage === 'sbf-assembly')) throw new Error('Packaged CLI did not analyze Solang and sBPF assembly fixtures.');
   await runTests({ extensionDevelopmentPath: extensionPath, launchArgs: [fixture], extensionTestsPath: path.resolve(__dirname, './runner') });
 }
 main().catch(error => { console.error(error); process.exit(1); });

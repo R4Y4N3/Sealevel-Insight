@@ -1,4 +1,4 @@
-# Sealevel Insight v0.7
+# Sealevel Insight v0.8
 
 Local program intelligence, architecture, metrics, and audit-scoping for Solana source code. Sealevel Insight is a VS Code extension and CLI designed to make an unfamiliar program repository answerable: what is in scope, what is externally reachable, which accounts and state are involved, where CPIs and PDAs occur, which token and asset movements happen and under whose authority, and which conclusions remain unresolved.
 
@@ -11,10 +11,10 @@ npm install
 npm run typecheck
 npm test
 npm run package
-code --install-extension sealevel-insight-0.7.2.vsix
+code --install-extension sealevel-insight-0.8.0.vsix
 ```
 
-Open a Rust workspace and run **Sealevel Insight: Analyze Workspace**. The Explorer, CodeLens, hovers, Problems diagnostics, and offline report use the same cached analysis model.
+Open a Solana workspace and run **Sealevel Insight: Analyze Workspace**. Rust, Solang Solidity, and hand-written sBPF assembly feed the same deterministic report, architecture, reachability, and audit-scoping model.
 
 CLI use after `npm run build`, or after installing the npm package:
 
@@ -59,7 +59,7 @@ Every analysis produces a deterministic audit manifest plus one instruction doss
 
 Where source evidence supports it, each instruction dossier reports the token movements it performs: the operation (`transfer`, `transfer_checked`, `mint_to`, `burn`, `close_account`, `set_authority`, `approve`, `revoke`, `freeze_account`, `thaw_account`, `initialize_*`, associated-token creation/recovery), whether SPL Token or Token-2022 is targeted, the bound source/destination/mint/authority/delegate/new-authority accounts, the raw amount/decimals expressions, the authority kind (signer account, proven PDA, ordinary account), invoke_signed/PDA-signer correlation, direct-vs-reached-through-helpers classification with call paths, per-flow evidence, completeness, and explicit unresolved reasons.
 
-Roles are bound only from positively identified signatures: Anchor `CpiContext` account-struct fields, known SPL/Token-2022 instruction constructors, or documented builder argument orders. A recognized operation whose roles cannot be established is reported unresolved — never guessed.
+Roles are bound only from positively identified signatures: Anchor `CpiContext` account-struct fields, known SPL/Token-2022 instruction constructors, documented builder argument orders, or the documented Solang `SplToken` ABI. A recognized operation whose roles cannot be established is reported unresolved — never guessed.
 
 Eligibility is not restricted to SPL Token/Token-2022 targets: Associated Token Program operations (`create`, `create_idempotent`, `recover_nested`) produce flows too, and cross-package CPIs proven reachable through the existing cross-package/reachability machinery also produce flows, attributed to the exposed instruction with a real function/call path. Only the specific native `initialize_*` constructors this module role-models (`initialize_account`, `initialize_account2`, `initialize_account3`, `initialize_mint`, `initialize_mint2`) produce flows; other `initialize_*` instructions (multisig, Token-2022 extensions, ...) remain visible as CPI sites without a fabricated flow.
 
@@ -88,11 +88,13 @@ Exports are portable. HTML is standalone, uses no CDN or remote requests, applie
 | Steel | Enriched | macros, instruction/account discriminators and layouts, entrypoint dispatch, chained signer/writable/executable/type/owner/address/sysvar/PDA validations, typed state access, program-account helper CPIs/lifecycle, lamport transfer/close helpers, events and error variants |
 | Quasar 0.1-style | Enriched | explicit instruction discriminators/arguments/return data, `Ctx`/`CtxWithRemaining`, typed `Remaining<T, N>` bounds and IDL trailing-account contracts, borrowed account views, account relations and lifecycle, typed PDA seed helpers, method-style regular/single/multi-signer CPIs, state, IDL/config evidence and generic Solana semantics |
 | Custom Rust | Generic fallback | syntax, symbols, calls, metrics and generic Solana semantics without forcing a framework |
+| Solang | Enriched source frontend | contracts/program IDs, constructors and public/external instructions, account annotations, local/external calls, SPL Token CPIs, PDA seeds/bumps, events, metrics and reachability |
+| Hand-written sBPF assembly | Evidence-bounded source frontend | entrypoints/functions, direct and register-indirect calls, branches/complexity, Solana syscalls, signed/dynamic CPIs, PDA derivation, and memory-access indicators |
 | Codama / Shank | Enriched metadata | Codama root/additional programs, config-referenced IDLs, node types/privileges/PDAs/discriminators, Shank discriminants/account aliases, and `ShankAccount` field IDL overrides |
 
 ## Language support
 
-Rust is the implemented language frontend. Solang/Solidity-on-Solana and hand-written sBPF assembly remain **Not implemented**: shipping regex-only frontends would give false confidence, so those files are not claimed as analyzed programs.
+Rust uses Tree-sitter Rust plus framework adapters. Solang uses the bundled Tree-sitter Solidity grammar for structural parsing and a Solang-specific annotation/API layer. Hand-written sBPF assembly uses a strict line-oriented ISA parser. Ordinary EVM Solidity and generic assembly are not classified as Solana programs unless the source contains sufficient positive Solang or sBPF/Solana evidence; their file metrics remain visible with an explicit diagnostic.
 
 ## Cargo and program identity
 
@@ -125,7 +127,7 @@ VS Code settings:
 | Setting | Purpose |
 |---|---|
 | `includePatterns` / `excludePatterns` | source discovery scope |
-| `includeTests` | include test/bench Rust sources |
+| `includeTests` | include test/bench source directories |
 | `maxFileSize` | skip oversized files with a diagnostic |
 | `enableIdlAnalysis` / `idlPatterns` | offline IDL discovery |
 | `showCodeLens` | confirmed-handler lenses |
@@ -146,8 +148,8 @@ VS Code caches in extension storage; CLI uses ignored `.sealevel-insight-cache/`
 
 ```text
 Source / metadata / Cargo / IDL
-  → Rust parser and symbol index
-  → generic Rust + Solana semantics
+  → Rust / Solang / sBPF assembly frontends
+  → language-specific symbols, calls, entrypoints and Solana semantics
   → additive framework/metadata enrichers
   → unified program model
   → calls and instruction reachability
@@ -157,13 +159,15 @@ Source / metadata / Cargo / IDL
 
 Core analysis modules do not import `vscode`. Normal execution performs no network access. The opt-in developer command `npm run test:real-world` is the only workflow that clones external repositories. It checks the 20-case QuickNode matrix against versioned expectations in `test/real-world/expectations`, then validates pinned Solana Foundation, Steel, and Shank/Codama targets in an ignored cache.
 
+The VSIX verifier pins SHA-256 checksums for both bundled parser grammars. The Solidity grammar is Tree-sitter Solidity 1.2.13 (`d6828119e6099d23a783c0e5486354b41523dfe4a1df5b3bc2b66105c3272d7f`); its source and full MIT terms are recorded in `THIRD_PARTY_NOTICES.md`.
+
 ## Validation, limitations, and roadmap
 
 Run `npm run typecheck`, `npm test`, `npm run build`, `npm run package`, `npm run verify:vsix`, `npm run test:integration`, `npm run test:real-world`, `npm run benchmark`, `npm audit`, and `git diff --check` before release assessment.
 
-Static analysis cannot resolve arbitrary macro expansion or Rust constant evaluation, target/platform `cfg` predicates without a compilation profile, concrete bodies behind trait-object/generic dispatch, nontrivial compiler type inference/autoderef, runtime-selected function pointers or program IDs, or all custom serialization. State dataflow follows source-visible aliases and concrete statically resolved calls; dynamic dispatch, opaque macro-generated mutations, raw-pointer aliasing, and mutation hidden in unavailable dependencies remain explicit incomplete/unresolved evidence rather than guessed effects. Feature predicates are authoritative only when the imported Cargo metadata contains the resolved feature set; otherwise they remain unknown. Cross-package calls are conservative and require indexed source plus Cargo dependency/path evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros or JavaScript configuration. Solang and assembly frontends are future work. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
+Static analysis cannot resolve arbitrary macro expansion or Rust constant evaluation, target/platform `cfg` predicates without a compilation profile, concrete bodies behind trait-object/generic dispatch, nontrivial compiler type inference/autoderef, runtime-selected function pointers or program IDs, or all custom serialization. State dataflow follows source-visible aliases and concrete statically resolved calls; dynamic dispatch, opaque macro-generated mutations, raw-pointer aliasing, and mutation hidden in unavailable dependencies remain explicit incomplete/unresolved evidence rather than guessed effects. Feature predicates are authoritative only when the imported Cargo metadata contains the resolved feature set; otherwise they remain unknown. Cross-package Rust calls are conservative and require indexed source plus Cargo dependency/path evidence. Solang procedural/compiler-generated behavior and assembly register values, account-buffer layouts, numeric call immediates, and indirect `callx` targets remain explicit unresolved evidence. Graph rendering is deliberately bounded. Framework and metadata adapters model evidenced common forms rather than executing procedural macros or JavaScript configuration. Sealevel Insight produces analysis diagnostics and review signals, not vulnerability findings.
 
-Marketplace publishing still requires the repository owner to confirm the real VS Code publisher account and provide screenshots. No publisher is invented, and this repository does not auto-publish.
+Marketplace releases use the `R4Y4N3` publisher identity and remain manually reviewed and published; the repository contains no automatic publishing workflow or publishing credentials.
 
 ## Contributing and license
 

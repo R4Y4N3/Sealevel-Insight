@@ -10,7 +10,7 @@
   "bin": {
     "sealevel-insight": "./dist/cli.js"
   },
-  "version": "0.7.2",
+  "version": "0.8.0",
   "publisher": "R4Y4N3",
   "license": "MIT",
   "repository": {
@@ -154,9 +154,14 @@
             "type": "string"
           },
           "default": [
-            "**/*.rs"
+            "**/*.rs",
+            "**/*.sol",
+            "**/*.s",
+            "**/*.S",
+            "**/*.asm",
+            "**/*.sbpf"
           ],
-          "description": "Glob patterns used to discover Rust sources and Cargo manifests."
+          "description": "Glob patterns used to discover Rust, Solang Solidity, and sBPF assembly sources."
         },
         "sealevelInsight.excludePatterns": {
           "type": "array",
@@ -299,10 +304,6 @@
     "tree-sitter-rust": "0.24.0",
     "typescript": "^5.9.3",
     "web-tree-sitter": "^0.25.10"
-  },
-  "allowScripts": {
-    "@vscode/vsce-sign@2.1.0": true,
-    "keytar@7.9.0": true
   },
   "dependencies": {
     "@iarna/toml": "^3.0.0"

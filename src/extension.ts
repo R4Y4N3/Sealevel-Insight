@@ -30,12 +30,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const generation = ++analysisGeneration;
     return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Sealevel Insight: analyzing ${mode}`, cancellable: true }, async (progress, token) => {
       try {
-        progress.report({ message: 'Scanning Rust and Cargo sources' });
+        progress.report({ message: 'Scanning Rust, Solang, sBPF assembly, and Cargo sources' });
         let sources = await scanWorkspace(); if (token.isCancellationRequested || generation !== analysisGeneration) return;
         const activeUri = vscode.window.activeTextEditor?.document.uri.toString();
         if (mode === 'file') sources = sources.filter(source => source.uri === activeUri);
-        if (mode === 'package') { const active = sources.find(source => source.uri === activeUri); if (!active) throw new Error('The active editor is not a discovered Rust source file.'); sources = sources.filter(source => source.packageId ? source.packageId === active.packageId : source.packageName === active.packageName); }
-        if (!sources.length) throw new Error(`No Rust sources matched the ${mode} analysis scope.`);
+        if (mode === 'package') { const active = sources.find(source => source.uri === activeUri); if (!active) throw new Error('The active editor is not a discovered supported source file.'); sources = sources.filter(source => source.packageId ? source.packageId === active.packageId : source.packageName === active.packageName); }
+        if (!sources.length) throw new Error(`No supported sources matched the ${mode} analysis scope.`);
         const configuration = vscode.workspace.getConfiguration('sealevelInsight');
         const enableIdl = configuration.get<boolean>('enableIdlAnalysis', false); const idlPatterns = configuration.get<string[]>('idlPatterns');
         const discoveries = enableIdl ? await Promise.all(workspaceFolders.map(folder => discoverIdlsDetailed(folder.uri.fsPath, idlPatterns))) : [];
@@ -45,9 +45,9 @@ export function activate(context: vscode.ExtensionContext): void {
         const cacheKey = analysisCacheKey(sources, cacheConfig); const cacheDir = vscode.Uri.joinPath(context.globalStorageUri, 'analysis-cache').fsPath;
         let report = await readAnalysisCache(cacheDir, cacheKey);
         if (!report) {
-          progress.report({ message: `Parsing and indexing ${sources.length} Rust files` });
-          const wasmPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter-rust.wasm').fsPath; const runtimePath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter.wasm').fsPath;
-          report = await analyzeSources(sources, wasmPath, runtimePath, () => token.isCancellationRequested || generation !== analysisGeneration, { compilationProfile });
+          progress.report({ message: `Parsing and indexing ${sources.length} source files` });
+          const wasmPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter-rust.wasm').fsPath; const solidityWasmPath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter-solidity.wasm').fsPath; const runtimePath = vscode.Uri.joinPath(context.extensionUri, 'dist', 'tree-sitter.wasm').fsPath;
+          report = await analyzeSources(sources, wasmPath, runtimePath, () => token.isCancellationRequested || generation !== analysisGeneration, { compilationProfile, solidityWasmPath });
           if (token.isCancellationRequested || generation !== analysisGeneration) return;
           report.workspace = { name: workspaceFolders.map(folder => folder.name).join(', '), roots: workspaceFolders.map(folder => folder.uri.fsPath) };
           const identityDiagnostics = (await Promise.all(workspaceFolders.map(folder => enrichProgramIdentities(folder.uri.fsPath, report!.programs)))).flat(); report.analysisDiagnostics?.push(...identityDiagnostics); report.diagnostics.push(...identityDiagnostics.map(item => item.message));
@@ -84,10 +84,11 @@ export function activate(context: vscode.ExtensionContext): void {
   async function exportScope(): Promise<void> { const folder = vscode.workspace.workspaceFolders?.[0]; if (!folder) return; const scope = await buildScope(folder.uri.fsPath); const uri = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.joinPath(folder.uri, 'sealevel-insight-scope.json'), filters: { JSON: ['json'] } }); if (uri) await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(scope, null, 2))); }
 
   let autoAnalyzeTimer: NodeJS.Timeout | undefined;
-  const scheduleAuto = (uri?: vscode.Uri) => { if (!vscode.workspace.getConfiguration('sealevelInsight').get<boolean>('autoAnalyze', false)) return; if (uri && !/\.(?:rs|toml|json)$|\.sealevel-insight\.json$/.test(uri.path)) return; if (autoAnalyzeTimer) clearTimeout(autoAnalyzeTimer); autoAnalyzeTimer = setTimeout(() => void runAnalysis('workspace'), 500); };
-  const watcher = vscode.workspace.createFileSystemWatcher('**/{*.rs,Cargo.toml,Anchor.toml,Quasar.toml,*.json,.sealevel-insight.json}'); watcher.onDidCreate(scheduleAuto); watcher.onDidChange(scheduleAuto); watcher.onDidDelete(scheduleAuto);
+  const scheduleAuto = (uri?: vscode.Uri) => { if (!vscode.workspace.getConfiguration('sealevelInsight').get<boolean>('autoAnalyze', false)) return; if (uri && !/\.(?:rs|sol|s|S|asm|sbpf|toml|json)$|\.sealevel-insight\.json$/.test(uri.path)) return; if (autoAnalyzeTimer) clearTimeout(autoAnalyzeTimer); autoAnalyzeTimer = setTimeout(() => void runAnalysis('workspace'), 500); };
+  const watcher = vscode.workspace.createFileSystemWatcher('**/{*.rs,*.sol,*.s,*.S,*.asm,*.sbpf,Cargo.toml,Anchor.toml,Quasar.toml,*.json,.sealevel-insight.json}'); watcher.onDidCreate(scheduleAuto); watcher.onDidChange(scheduleAuto); watcher.onDidDelete(scheduleAuto);
   const saveWatcher = vscode.workspace.onDidSaveTextDocument(document => scheduleAuto(document.uri));
-  context.subscriptions.push(output, diagnostics, ...commands, watcher, saveWatcher, { dispose: () => { analysisGeneration++; if (autoAnalyzeTimer) clearTimeout(autoAnalyzeTimer); } }, vscode.window.registerTreeDataProvider('sealevelInsightExplorer', explorer), vscode.languages.registerCodeLensProvider({ language: 'rust' }, codeLens), vscode.languages.registerHoverProvider({ language: 'rust' }, new InsightHover(() => lastReport)));
+  const supportedLanguages: vscode.DocumentSelector = [{ language: 'rust' }, { language: 'solidity' }, { language: 'asm' }];
+  context.subscriptions.push(output, diagnostics, ...commands, watcher, saveWatcher, { dispose: () => { analysisGeneration++; if (autoAnalyzeTimer) clearTimeout(autoAnalyzeTimer); } }, vscode.window.registerTreeDataProvider('sealevelInsightExplorer', explorer), vscode.languages.registerCodeLensProvider(supportedLanguages, codeLens), vscode.languages.registerHoverProvider(supportedLanguages, new InsightHover(() => lastReport)));
 }
 
 function publishDiagnostics(report: WorkspaceReport, collection: vscode.DiagnosticCollection): void { collection.clear(); const grouped = new Map<string, vscode.Diagnostic[]>(); for (const item of report.analysisDiagnostics ?? []) { if (!item.location?.uri.startsWith('file:')) continue; const severity = item.severity === 'error' ? vscode.DiagnosticSeverity.Error : item.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information; const diagnostic = new vscode.Diagnostic(new vscode.Range(item.location.startLine - 1, item.location.startColumn, item.location.endLine - 1, item.location.endColumn), item.message, severity); diagnostic.source = 'Sealevel Insight'; diagnostic.code = item.category; grouped.set(item.location.uri, [...(grouped.get(item.location.uri) ?? []), diagnostic]); } for (const [uri, items] of grouped) collection.set(vscode.Uri.parse(uri), items); }

@@ -138,16 +138,17 @@ const BUILDER_AMOUNT_INDEX: Record<string, number> = {
 
 /** Solang's built-in SplToken interface has no explicit program-id argument. */
 const SOLANG_SIGNATURES: Record<string, string[]> = {
-  transfer: ['source', 'destination', 'authority'], transfer_checked: ['source', 'mint', 'destination', 'authority'],
-  mint_to: ['mint', 'destination', 'authority'], mint_to_checked: ['mint', 'destination', 'authority'],
-  burn: ['source', 'mint', 'authority'], burn_checked: ['source', 'mint', 'authority'],
-  close_account: ['source', 'destination', 'authority'], approve: ['source', 'delegate', 'authority'],
-  approve_checked: ['source', 'mint', 'delegate', 'authority'], revoke: ['source', 'authority'],
-  freeze_account: ['source', 'mint', 'authority'], thaw_account: ['source', 'mint', 'authority']
+  transfer: ['source', 'destination', 'authority'],
+  mint_to: ['mint', 'destination', 'authority'],
+  burn: ['source', 'mint', 'authority'],
+  approve: ['source', 'delegate', 'authority'],
+  revoke: ['source', 'authority'],
+  // Official Solang's remove_mint_authority(mintAccount, mintAuthority) emits SetAuthority
+  // with a null new authority. The operation is canonicalized to set_authority by the frontend.
+  set_authority: ['source', 'authority']
 };
 const SOLANG_AMOUNT_INDEX: Record<string, { amount?: number; decimals?: number }> = {
-  transfer: { amount: 3 }, transfer_checked: { amount: 4, decimals: 5 }, mint_to: { amount: 3 }, mint_to_checked: { amount: 3, decimals: 4 },
-  burn: { amount: 3 }, burn_checked: { amount: 3, decimals: 4 }, approve: { amount: 3 }, approve_checked: { amount: 4, decimals: 5 }
+  transfer: { amount: 3 }, mint_to: { amount: 3 }, burn: { amount: 3 }, approve: { amount: 3 }
 };
 
 /** anchor_spl wrapper calls pass (ctx, amount[, decimals]); the analyzer records them without ctx. */

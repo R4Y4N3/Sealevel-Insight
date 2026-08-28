@@ -720,7 +720,7 @@ function dedupeEvidence(items: import('../model/report').FrameworkEvidence[]): i
 function buildArchitecture(program: ProgramUnit): void {
   const uniqueAccounts = new Map<string, AccountInfo>();
   for (const account of program.accounts) {
-    const key = `${account.location.uri}:${account.location.startLine}:${account.location.startColumn}:${account.type}:${account.name ?? ''}`;
+    const key = account.id ?? `${account.contextType ?? ''}:${account.location.uri}:${account.location.startLine}:${account.location.startColumn}:${account.type}:${account.name ?? ''}`;
     const existing = uniqueAccounts.get(key);
     if (existing) {
       existing.signer ||= account.signer;

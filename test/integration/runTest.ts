@@ -24,6 +24,6 @@ async function main(): Promise<void> {
   execFileSync(process.execPath, [cli, 'analyze', path.resolve(repositoryRoot, 'test/fixtures/non-rust'), '--format', 'json', '--output', nonRustOutput, '--no-cache', '--disable-idl']);
   const nonRust = JSON.parse(readFileSync(nonRustOutput, 'utf8'));
   if (nonRust.summary.solidityFiles !== 1 || nonRust.summary.assemblyFiles !== 1 || !nonRust.programs.some((program: { sourceLanguage?: string }) => program.sourceLanguage === 'solang-solidity') || !nonRust.programs.some((program: { sourceLanguage?: string }) => program.sourceLanguage === 'sbf-assembly')) throw new Error('Packaged CLI did not analyze Solang and sBPF assembly fixtures.');
-  await runTests({ extensionDevelopmentPath: extensionPath, launchArgs: [fixture], extensionTestsPath: path.resolve(__dirname, './runner') });
+  await runTests({ extensionDevelopmentPath: extensionPath, launchArgs: [fixture], extensionTestsPath: path.resolve(__dirname, './runner'), version: process.env.VSCODE_TEST_VERSION ?? 'stable' });
 }
 main().catch(error => { console.error(error); process.exit(1); });

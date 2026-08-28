@@ -13,10 +13,16 @@ import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
 import { applyCargoMetadata } from '../../src/discovery/cargoMetadata';
 import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
+import { isCurrentSchemaVersion } from '../../src/core/version';
 
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
 
 describe('Sealevel Insight v0.6 release semantics', () => {
+  it('accepts only exact current-schema reports from persisted editor state', () => {
+    assert.equal(isCurrentSchemaVersion('0.8.0'), true);
+    assert.equal(isCurrentSchemaVersion('0.7.0'), false);
+    assert.equal(isCurrentSchemaVersion('0.6.0'), false);
+  });
   it('validates a generated report against the versioned JSON schema', async () => {
     const report = await sampleReport('pub fn handler() {}');
     const schema = JSON.parse(await fs.readFile(path.resolve(__dirname, '../../../schemas/report.schema.json'), 'utf8'));

@@ -281,13 +281,15 @@
     "test:wasm": "node scripts/smoke-wasm.js",
     "build": "node esbuild.mjs",
     "build:test": "tsc -p tsconfig.test.json",
-    "grammar:wasm": "mkdir -p resources/parsers && tree-sitter build --wasm --output resources/parsers/tree-sitter-rust.wasm node_modules/tree-sitter-rust",
+    "grammar:wasm": "node scripts/build-grammars.js",
+    "prepack": "npm run build",
     "package": "npm run build && npx @vscode/vsce package --no-dependencies -o sealevel-insight-$npm_package_version.vsix",
     "verify:vsix": "node scripts/verify-vsix.js",
     "cli": "node dist/cli.js",
     "build:integration": "tsc -p tsconfig.integration.json",
     "test:integration": "npm run build && npm run package && npm run verify:vsix && npm run build:integration && node dist-integration/test/integration/runTest.js",
-    "test:real-world": "npm run build && node scripts/real-world-smoke.js",
+    "test:non-rust": "npm run build && node scripts/non-rust-smoke.js",
+    "test:real-world": "npm run build && node scripts/non-rust-smoke.js && node scripts/real-world-smoke.js",
     "benchmark": "npm run build && node scripts/benchmark.js"
   },
   "devDependencies": {

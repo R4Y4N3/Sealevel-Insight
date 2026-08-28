@@ -7,6 +7,9 @@
 - Added conservative language detection that records metrics but refuses to classify ordinary EVM Solidity or generic assembly as a Solana program without multiple source-level signals.
 - Integrated non-Rust sources with workspace discovery, CLI/extension analysis, caches, reports, diffs, audit manifests, architecture, review hotspots, VSIX packaging, and source-language summaries while retaining backward-compatible `rustFiles` fields.
 - Bundled the Tree-sitter Solidity 1.2.13 WebAssembly grammar for fully local/offline parsing and added its complete MIT notice.
+- Aligned Solang SPL Token classification with the current official API: read helpers no longer appear as CPIs, unsupported operations remain unresolved, and annotated constructor parameters feed deterministic PDA seed/bump evidence.
+- Aligned assembly parsing with the current Anza sBPF opcode table, including PQR instructions, `lddw`, `jset`, and 32-bit jumps; generic eBPF is no longer classified as a Solana program without Solana-specific evidence.
+- Added a deterministic non-Rust ground-truth corpus, current upstream Solang validation, reproducible dual-grammar builds with pinned integrity checks, strict stored-report schema invalidation, and a minimal npm package allowlist.
 
 ## 0.7.3
 

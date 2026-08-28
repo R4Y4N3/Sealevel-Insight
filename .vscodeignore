@@ -11,6 +11,7 @@ node_modules/**
 .github/**
 *.vsix
 .gitignore
+.npmignore
 **/*.map
 esbuild.mjs
 tsconfig*.json

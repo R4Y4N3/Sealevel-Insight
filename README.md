@@ -16,7 +16,7 @@ code --install-extension sealevel-insight-0.8.0.vsix
 
 Open a Solana workspace and run **Sealevel Insight: Analyze Workspace**. Rust, Solang Solidity, and hand-written sBPF assembly feed the same deterministic report, architecture, reachability, and audit-scoping model.
 
-CLI use after `npm run build`, or after installing the npm package:
+CLI use from a checkout after `npm run build`, or through the `sealevel-insight` binary when installed from a package tarball/registry:
 
 ```bash
 sealevel-insight analyze . --format json --output report.json
@@ -159,7 +159,7 @@ Source / metadata / Cargo / IDL
 
 Core analysis modules do not import `vscode`. Normal execution performs no network access. The opt-in developer command `npm run test:real-world` is the only workflow that clones external repositories. It checks the 20-case QuickNode matrix against versioned expectations in `test/real-world/expectations`, then validates pinned Solana Foundation, Steel, and Shank/Codama targets in an ignored cache.
 
-The VSIX verifier pins SHA-256 checksums for both bundled parser grammars. The Solidity grammar is Tree-sitter Solidity 1.2.13 (`d6828119e6099d23a783c0e5486354b41523dfe4a1df5b3bc2b66105c3272d7f`); its source and full MIT terms are recorded in `THIRD_PARTY_NOTICES.md`.
+The VSIX verifier pins SHA-256 checksums for both bundled parser grammars. `npm run grammar:wasm` rebuilds Rust from the locked dependency and fetches the integrity-pinned Tree-sitter Solidity 1.2.13 source package before rebuilding it; both outputs must reproduce their checked-in checksums. The source references and full MIT terms are recorded in `THIRD_PARTY_NOTICES.md`.
 
 ## Validation, limitations, and roadmap
 

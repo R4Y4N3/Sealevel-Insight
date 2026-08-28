@@ -2,7 +2,5 @@
 export const TOOL_VERSION = '0.8.0';
 export const SCHEMA_VERSION = '0.8.0';
 
-/** True when a report was produced by a structurally compatible older schema. */
-export function isCompatibleSchemaVersion(value: unknown): boolean {
-  return value === SCHEMA_VERSION || value === '0.6.0';
-}
+/** Stored reports and baselines are usable only when their exact schema is current. */
+export function isCurrentSchemaVersion(value: unknown): boolean { return value === SCHEMA_VERSION; }

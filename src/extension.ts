@@ -13,6 +13,7 @@ import { analysisCacheKey, clearAnalysisCache, readAnalysisCache, writeAnalysisC
 import { buildScope } from './core/scope';
 import { diffReports } from './core/diff';
 import { refreshAuditProducts } from './analysis/auditProducts';
+import { isCurrentSchemaVersion } from './core/version';
 
 type AnalysisMode = 'workspace' | 'package' | 'file';
 
@@ -20,7 +21,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Sealevel Insight');
   const diagnostics = vscode.languages.createDiagnosticCollection('Sealevel Insight');
   const explorer = new InsightExplorer(); const codeLens = new InsightCodeLens();
-  let lastReport = context.workspaceState.get<WorkspaceReport>('sealevelInsight.lastReport');
+  const storedLastReport = context.workspaceState.get<WorkspaceReport>('sealevelInsight.lastReport');
+  let lastReport = storedLastReport && isCurrentSchemaVersion(storedLastReport.schemaVersion) ? storedLastReport : undefined;
+  if (storedLastReport && !lastReport) { output.appendLine(`Discarded stored report schema ${storedLastReport.schemaVersion}; analyze again with the current extension.`); void context.workspaceState.update('sealevelInsight.lastReport', undefined); }
   if (lastReport) { explorer.setReport(lastReport); codeLens.setReport(lastReport); publishDiagnostics(lastReport, diagnostics); }
   let analysisGeneration = 0;
 
@@ -76,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('sealevelInsight.exportHtml', () => exportReport('html')),
     vscode.commands.registerCommand('sealevelInsight.exportScope', exportScope),
     vscode.commands.registerCommand('sealevelInsight.saveBaseline', async () => { if (!lastReport) { void vscode.window.showInformationMessage('Analyze a workspace before saving a baseline.'); return; } await context.workspaceState.update('sealevelInsight.baseline', lastReport); void vscode.window.showInformationMessage('Sealevel Insight baseline saved.'); }),
-    vscode.commands.registerCommand('sealevelInsight.compareBaseline', async () => { const baseline = context.workspaceState.get<WorkspaceReport>('sealevelInsight.baseline'); if (!baseline || !lastReport) { void vscode.window.showInformationMessage('Save a baseline and analyze the workspace before comparing.'); return; } const document = await vscode.workspace.openTextDocument({ language: 'json', content: JSON.stringify(diffReports(baseline, lastReport), null, 2) }); await vscode.window.showTextDocument(document, { preview: true }); }),
+    vscode.commands.registerCommand('sealevelInsight.compareBaseline', async () => { const baseline = context.workspaceState.get<WorkspaceReport>('sealevelInsight.baseline'); if (!baseline || !lastReport) { void vscode.window.showInformationMessage('Save a baseline and analyze the workspace before comparing.'); return; } if (!isCurrentSchemaVersion(baseline.schemaVersion)) { void vscode.window.showWarningMessage(`The saved baseline uses schema ${baseline.schemaVersion}. Save a new baseline with Sealevel Insight ${lastReport.schemaVersion} before comparing.`); return; } const document = await vscode.workspace.openTextDocument({ language: 'json', content: JSON.stringify(diffReports(baseline, lastReport), null, 2) }); await vscode.window.showTextDocument(document, { preview: true }); }),
     vscode.commands.registerCommand('sealevelInsight.clearCache', async () => { await clearAnalysisCache(vscode.Uri.joinPath(context.globalStorageUri, 'analysis-cache').fsPath); void vscode.window.showInformationMessage('Sealevel Insight analysis cache cleared.'); })
   ];
 

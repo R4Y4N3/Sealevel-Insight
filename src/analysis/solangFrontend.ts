@@ -7,6 +7,15 @@ export interface SourceFrontendInput { uri: string; source: string; packageName?
 export interface FrontendResult { programs: ProgramUnit[]; file: FileMetric; diagnostics: string[]; }
 
 const solanaEvidence = /(?:import\s+["']solana["']|@program_id\s*\(|@(payer|seed|bump|space|account|mutableAccount|signer|mutableSigner)\b|\btx\.accounts\b|\bAccountMeta\b|\bSplToken\b)/;
+const SOLANG_SPL_TOKEN_CPIS: Record<string, { operation: string; category: CpiOperationCategory }> = {
+  mint_to: { operation: 'mint_to', category: 'token-mint' },
+  transfer: { operation: 'transfer', category: 'token-transfer' },
+  burn: { operation: 'burn', category: 'token-burn' },
+  approve: { operation: 'approve', category: 'authority-change' },
+  revoke: { operation: 'revoke', category: 'authority-change' },
+  remove_mint_authority: { operation: 'set_authority', category: 'authority-change' }
+};
+const SOLANG_SPL_TOKEN_READ_HELPERS = new Set(['total_supply', 'get_balance', 'get_account_info', 'get_token_account_data', 'get_mint_account_data']);
 
 export async function analyzeSolang(input: SourceFrontendInput, wasmPath: string | undefined, runtimeWasmPath?: string): Promise<FrontendResult> {
   if (!wasmPath) return { programs: [], file: textFileMetric(input.uri, input.source, 'solang-solidity', { parseError: 'Solidity parser was not configured.' }), diagnostics: [`${input.uri}: Solidity parser was not configured.`] };
@@ -40,7 +49,7 @@ function contractProgram(input: SourceFrontendInput, contract: Node, metric: Fil
   for (const node of functions) {
     const constructor = node.type === 'constructor_definition'; const name = constructor ? 'new' : node.childForFieldName('name')?.text ?? 'anonymous';
     const location = nodeLocation(input.uri, node); const text = node.text; const children = nonNull(node.namedChildren); const visibility = children.find(child => child.type === 'visibility')?.text ?? /\b(external|public|internal|private)\b/.exec(text)?.[1] ?? (constructor ? 'public' : 'internal');
-    const parameterNodes = children.filter(child => child.type === 'parameter'); const parameterItems = parameterNodes.map(parameter => ({ name: parameter.childForFieldName('name')?.text ?? 'argument', type: parameter.childForFieldName('type')?.text ?? parameter.namedChildren[0]?.text })); const parameters = parameterItems.length; const returnType = node.childForFieldName('return_type')?.text ?? /\breturns\s*\(([^)]*)\)/.exec(text)?.[1]?.trim();
+    const parameterNodes = children.filter(child => child.type === 'parameter'); const astParameters = parameterNodes.map((parameter, index) => ({ name: parameter.childForFieldName('name')?.text ?? `argument${index + 1}`, type: parameter.childForFieldName('type')?.text ?? parameter.namedChildren[0]?.text })); const parsedParameters = parseSolangParameters(text); const parameterItems = parsedParameters.parameters.length || parsedParameters.signatureFound ? parsedParameters.parameters : astParameters; const parameters = parameterItems.length; const returnType = node.childForFieldName('return_type')?.text ?? /\breturns\s*\(([^)]*)\)/.exec(text)?.[1]?.trim();
     const qualifiedName = `${contractName}::${name}`;
     const complexity = 1 + node.descendantsOfType(['if_statement', 'for_statement', 'while_statement', 'do_while_statement', 'try_statement', 'conditional_expression']).length;
     const lines = location.endLine - location.startLine + 1;
@@ -48,13 +57,15 @@ function contractProgram(input: SourceFrontendInput, contract: Node, metric: Fil
     const annotations = annotationsBefore(input.source, node.startIndex);
     const contextType = `${contractName}::${name}`;
     const accounts = parseAccounts(input, annotations, contextType, program.accounts.length);
-    if (constructor && annotationValues(annotations, 'payer').length) addConstructorAccountsAndCpi(program, input, annotations, contextType, name, location, accounts);
+    const pdaSeeds = constructor ? [...new Set([...annotationValues(annotations, 'seed'), ...parsedParameters.seedParameters])] : annotationValues(annotations, 'seed');
+    const pdaBump = annotationValues(annotations, 'bump')[0] ?? (constructor ? parsedParameters.bumpParameter : undefined);
+    if (constructor && annotationValues(annotations, 'payer').length) addConstructorAccountsAndCpi(program, input, annotations, contextType, name, location, accounts, pdaSeeds);
     program.accounts.push(...accounts); program.securitySurface.signerSignals += accounts.filter(account => account.signer).length; program.securitySurface.writableSignals += accounts.filter(account => account.writable).length;
     if (constructor || visibility === 'public' || visibility === 'external') {
       const selector = annotationValues(annotations, 'selector')[0];
       program.instructions.push({ id: stableId('instruction', input.uri, location.startLine, name), name, functionName: name, handler: qualifiedName, contextType, discriminator: selector, arguments: parameterItems, returns: returnType, location, confidence: 0.96, evidence: [{ description: constructor ? 'Solang constructor is externally reachable' : `Solang ${visibility} function is externally reachable`, location }] });
     }
-    addPdaEvidence(program, input, annotations, name, location, accounts);
+    addPdaEvidence(program, input, pdaSeeds, pdaBump, name, location, accounts);
     const bodyCalls = nonNull(node.descendantsOfType('call_expression'));
     for (const call of bodyCalls) analyzeCall(program, input, qualifiedName, name, call, calls);
   }
@@ -77,11 +88,22 @@ function analyzeCall(program: ProgramUnit, input: SourceFrontendInput, caller: s
   const location = nodeLocation(input.uri, node); const expression = node.childForFieldName('function')?.text ?? node.namedChildren[0]?.text ?? node.text; const plain = /^([A-Za-z_]\w*)/.exec(expression)?.[1] ?? expression;
   if (/^(require|assert|revert|keccak256|sha256|ripemd160|ecrecover)$/.test(plain)) return;
   const member = /([A-Za-z_]\w*)\.([A-Za-z_]\w*)/.exec(expression); const spl = member?.[1] === 'SplToken';
-  if (member && (spl || /\{\s*(?:accounts|program_id|seeds)\s*:/.test(expression))) {
-    const operation = member[2]; const args = callArguments(node.text); const category = cpiCategory(operation); const signed = /\bseeds\s*:/.test(expression);
-    const cpi: CpiSite = { id: stableId('cpi', input.uri, location.startLine, operation), location, functionName, target: spl ? 'spl-token' : member[1], targetKind: spl ? 'spl-token' : 'custom', operation, operationCategory: category, invocationApi: spl ? `Solang SplToken.${operation}` : 'Solang external call', instructionExpression: node.text, accountArguments: args, pdaSigned: signed, evidence: [{ description: spl ? `Solang SplToken.${operation} CPI` : `Solang cross-contract ${member[1]}.${operation} CPI`, location }], confidence: 0.93 };
+  const splCpi = spl && member ? SOLANG_SPL_TOKEN_CPIS[member[2]] : undefined;
+  if (member && (splCpi || !spl && /\{\s*(?:accounts|program_id|seeds)\s*:/.test(expression))) {
+    const operation = splCpi?.operation ?? member[2]; const args = callArguments(node.text); const category = splCpi?.category ?? cpiCategory(operation); const signed = /\bseeds\s*:/.test(expression);
+    const cpi: CpiSite = { id: stableId('cpi', input.uri, location.startLine, operation), location, functionName, target: splCpi ? 'spl-token' : member[1], targetKind: splCpi ? 'spl-token' : 'custom', operation, operationCategory: category, invocationApi: splCpi ? `Solang SplToken.${member[2]}` : 'Solang external call', instructionExpression: node.text, accountArguments: args, pdaSigned: signed, evidence: [{ description: splCpi ? `Documented Solang SplToken.${member[2]} CPI` : `Solang cross-contract ${member[1]}.${operation} CPI`, location }], confidence: 0.93 };
     program.securitySurface.cpiSites.push(cpi);
     if (signed) program.securitySurface.pdaSites.push({ id: stableId('pda', input.uri, location.startLine, operation), seeds: annotationStructValues(expression, 'seeds'), location, enclosingFunction: functionName, derivationApi: 'Solang CPI seeds call option', usedAsSigner: true, relatedCpiIds: [cpi.id!], evidence: [{ description: 'Solang CPI provides PDA signer seeds', location }], confidence: 0.9 });
+    return;
+  }
+  if (spl && member && SOLANG_SPL_TOKEN_READ_HELPERS.has(member[2])) {
+    calls.push({ id: stableId('call', input.uri, location.startLine, expression), caller, callee: `SplToken.${member[2]}`, resolved: false, sourceExpression: expression, status: 'external', confidence: 0.98, resolutionReason: 'documented Solang SplToken helper reads source-visible account data and does not perform a CPI', location, evidence: [{ description: `Documented read-only Solang SplToken.${member[2]} helper`, location }] });
+    program.runtimeOperations ??= [];
+    program.runtimeOperations.push({ id: stableId('runtime', input.uri, location.startLine, `SplToken.${member[2]}`), kind: member[2] === 'get_account_info' ? 'account-iteration' : 'data-read', api: `SplToken.${member[2]}`, functionName, instructionIds: [], location, evidence: [{ description: 'Solang SPL helper reads transaction account metadata/data without invoking the Token Program', location }] });
+    return;
+  }
+  if (spl && member) {
+    calls.push({ id: stableId('call', input.uri, location.startLine, expression), caller, callee: `SplToken.${member[2]}`, resolved: false, sourceExpression: expression, status: 'unresolved', confidence: 0.5, resolutionReason: `SplToken.${member[2]} is not part of the modeled official Solang SPL-token ABI`, location, evidence: [{ description: 'Unmodeled Solang SplToken helper; CPI behavior is not guessed', location }] });
     return;
   }
   const status = /\.|\[|\(/.test(expression) && !/^\w+$/.test(expression) ? 'dynamic' : 'unresolved';
@@ -101,28 +123,42 @@ function parseAccounts(input: SourceFrontendInput, annotations: string, contextT
   return [...result.values()];
 }
 
-function addPdaEvidence(program: ProgramUnit, input: SourceFrontendInput, annotations: string, fn: string, location: ReturnType<typeof nodeLocation>, accounts: AccountInfo[]): void {
-  const seeds = annotationValues(annotations, 'seed'); if (!seeds.length) return; const bump = annotationValues(annotations, 'bump')[0];
+function addPdaEvidence(program: ProgramUnit, input: SourceFrontendInput, seeds: string[], bump: string | undefined, fn: string, location: ReturnType<typeof nodeLocation>, accounts: AccountInfo[]): void {
+  if (!seeds.length) return;
   const related = accounts.find(account => account.name === 'dataAccount') ?? accounts[0];
   const relatedCpis = program.securitySurface.cpiSites.filter(cpi => cpi.functionName === fn && cpi.pdaSigned).map(cpi => cpi.id!).filter(Boolean);
   const id = stableId('pda', input.uri, location.startLine, fn); program.securitySurface.pdaSites.push({ id, seeds, bump, location, enclosingFunction: fn, relatedAccountId: related?.id, derivationApi: 'Solang @seed/@bump annotations', usedAsSigner: relatedCpis.length > 0, relatedCpiIds: relatedCpis, evidence: [{ description: 'Solang PDA constructor annotations', location }], confidence: 0.94 }); if (related) related.pdaId = id;
   for (const cpi of program.securitySurface.cpiSites.filter(item => relatedCpis.includes(item.id!))) cpi.signerPdaIds = [...new Set([...(cpi.signerPdaIds ?? []), id])];
 }
 
-function addConstructorAccountsAndCpi(program: ProgramUnit, input: SourceFrontendInput, annotations: string, contextType: string, fn: string, location: ReturnType<typeof nodeLocation>, accounts: AccountInfo[]): void {
+function addConstructorAccountsAndCpi(program: ProgramUnit, input: SourceFrontendInput, annotations: string, contextType: string, fn: string, location: ReturnType<typeof nodeLocation>, accounts: AccountInfo[], seeds: string[]): void {
   if (!accounts.some(account => account.name === 'dataAccount')) accounts.push({ id: `account:${contextType}:dataAccount`, name: 'dataAccount', type: 'SolangDataAccount', writable: true, ordinal: accounts.length, contextType, lifecycle: ['init', 'create', 'write'], location, confidence: 0.94, evidence: [{ description: 'Solang constructor implicit data account allocated using @payer', location }] });
   if (!accounts.some(account => account.name === 'systemProgram')) accounts.push({ id: `account:${contextType}:systemProgram`, name: 'systemProgram', type: 'SystemProgram', executable: true, addressExpectation: '11111111111111111111111111111111', ordinal: accounts.length, contextType, location, confidence: 0.94, evidence: [{ description: 'Solang constructor account allocation uses the System Program', location }] });
-  const seeds = annotationValues(annotations, 'seed'); const cpiId = stableId('cpi', input.uri, location.startLine, 'constructor-allocation');
+  const cpiId = stableId('cpi', input.uri, location.startLine, 'constructor-allocation');
   program.securitySurface.cpiSites.push({ id: cpiId, location, functionName: fn, target: 'system-program', targetKind: 'system-program', operation: 'create-account', operationCategory: 'account-creation', invocationApi: 'Solang constructor allocation', instructionExpression: `@payer(${annotationValues(annotations, 'payer')[0]})${annotationValues(annotations, 'space')[0] ? ` @space(${annotationValues(annotations, 'space')[0]})` : ''}`, accountArguments: ['dataAccount', annotationValues(annotations, 'payer')[0], 'systemProgram'], pdaSigned: seeds.length > 0, evidence: [{ description: 'Solang compiler-generated constructor account allocation evidenced by @payer', location }], confidence: 0.92 });
 }
 
 function nodeLocation(uri: string, node: Node) { return { uri, startLine: node.startPosition.row + 1, startColumn: node.startPosition.column, endLine: node.endPosition.row + 1, endColumn: node.endPosition.column }; }
 function nearestContract(node: Node): Node | undefined { let parent = node.parent; while (parent && parent.type !== 'contract_declaration') parent = parent.parent; return parent ?? undefined; }
 function annotationsBefore(source: string, offset: number): string { const prefix = source.slice(0, offset); const lines = prefix.split(/\r?\n/); const selected: string[] = []; for (let i = lines.length - 1; i >= 0; i--) { const line = lines[i].trim(); if (!line || line.startsWith('//')) { if (!selected.length) continue; break; } if (line.startsWith('@') || (selected.length && !/[;{}]/.test(line))) selected.unshift(line); else break; } return selected.join('\n'); }
+function parseSolangParameters(text: string): { parameters: Array<{ name: string; type?: string }>; seedParameters: string[]; bumpParameter?: string; signatureFound: boolean } {
+  const keyword = /\b(?:constructor|function\s+[A-Za-z_]\w*)\s*\(/.exec(text); if (!keyword) return { parameters: [], seedParameters: [], signatureFound: false };
+  const open = text.indexOf('(', keyword.index); const close = matchingDelimiter(text, open, '(', ')'); if (close < 0) return { parameters: [], seedParameters: [], signatureFound: false };
+  const parameters: Array<{ name: string; type?: string }> = []; const seedParameters: string[] = []; let bumpParameter: string | undefined;
+  for (const [index, raw] of splitTopLevel(text.slice(open + 1, close)).entries()) {
+    const hasSeed = /@seed\b/.test(raw); const hasBump = /@bump\b/.test(raw);
+    const clean = raw.replace(/@[A-Za-z_]\w*(?:\s*\([^)]*\))?/g, ' ').replace(/\s+/g, ' ').trim(); if (!clean) continue;
+    const nameMatch = /([A-Za-z_]\w*)\s*$/.exec(clean); const name = nameMatch?.[1] ?? `argument${index + 1}`;
+    const prefix = nameMatch ? clean.slice(0, nameMatch.index).trim() : clean; const type = prefix.replace(/\b(?:memory|calldata|storage)\b/g, '').replace(/\s+/g, ' ').trim() || undefined;
+    parameters.push({ name, type }); if (hasSeed) seedParameters.push(name); if (hasBump) bumpParameter = name;
+  }
+  return { parameters, seedParameters, bumpParameter, signatureFound: true };
+}
 function annotationValues(text: string, name: string): string[] { const values: string[] = []; const regex = new RegExp(`@${name}\\s*\\(([^)]*)\\)`, 'g'); for (const match of text.matchAll(regex)) values.push(match[1].trim()); return values; }
 function annotationStructValues(text: string, name: string): string[] { const match = new RegExp(`${name}\\s*:\\s*\\[([^\\]]*)\\]`).exec(text); return match ? match[1].split(',').map(item => item.trim()).filter(Boolean) : []; }
 function callArguments(text: string): string[] { const start = text.lastIndexOf('('); const end = text.lastIndexOf(')'); if (start < 0 || end <= start) return []; return splitTopLevel(text.slice(start + 1, end)); }
 function splitTopLevel(text: string): string[] { const values: string[] = []; let depth = 0; let start = 0; for (let i = 0; i < text.length; i++) { if ('([{'.includes(text[i])) depth++; else if (')]}'.includes(text[i])) depth--; else if (text[i] === ',' && depth === 0) { values.push(text.slice(start, i).trim()); start = i + 1; } } const last = text.slice(start).trim(); if (last) values.push(last); return values; }
+function matchingDelimiter(text: string, start: number, open: string, close: string): number { let depth = 0; let quote = ''; for (let index = start; index < text.length; index++) { const char = text[index]; if (quote) { if (char === '\\') index++; else if (char === quote) quote = ''; continue; } if (char === '"' || char === "'") { quote = char; continue; } if (char === open) depth++; else if (char === close && --depth === 0) return index; } return -1; }
 function cpiCategory(operation: string): CpiOperationCategory { if (/^transfer/.test(operation)) return 'token-transfer'; if (/^mint_to/.test(operation)) return 'token-mint'; if (/^burn/.test(operation)) return 'token-burn'; if (operation === 'close_account') return 'account-close'; if (/^(set_authority|approve|revoke)/.test(operation)) return 'authority-change'; if (operation === 'freeze_account') return 'freeze'; if (operation === 'thaw_account') return 'thaw'; if (/^initialize/.test(operation)) return 'initialization'; return 'other'; }
 function nonNull(nodes: Array<Node | null>): Node[] { return nodes.filter((node): node is Node => node !== null); }
 function escapeRegex(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

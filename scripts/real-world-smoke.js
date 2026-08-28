@@ -7,6 +7,7 @@ const cacheRoot = path.resolve(process.env.SEALEVEL_REAL_WORLD_ROOT || path.join
 const quicknode = { repository: 'https://github.com/quicknode/solana-program-examples.git', commit: '53e30d4116bbcf900820bb1c2eb7c2a9bfc7bbc8' };
 const foundation = { repository: 'https://github.com/solana-foundation/program-examples.git', commit: '491e195f6f98e6ba2f6913c261dbdaa1676c9a04' };
 const steel = { repository: 'https://github.com/regolith-labs/steel.git', commit: '59f8e9a5633dc6a3b0f5acfb44693e935e257024' };
+const solang = { repository: 'https://github.com/hyperledger-solang/solang.git', commit: '420deda4b811e554ebe89752d0609c6f61fd286d' };
 const expectationDirectory = path.join(repositoryRoot, 'test/real-world/expectations');
 fs.mkdirSync(cacheRoot, { recursive: true });
 
@@ -26,7 +27,8 @@ for (const expected of expectations) {
 const secondaryResults = validateFoundation(checkout(foundation));
 const steelResult = validateSteel(checkout(steel));
 const shankResult = validateShank(path.join(quicknodeRoot, 'tools/shank-and-codama/native'));
-for (const result of [...secondaryResults, steelResult, shankResult]) {
+const solangResult = validateSolang(checkout(solang));
+for (const result of [...secondaryResults, steelResult, shankResult, solangResult]) {
   process.stdout.write(`${result.name}\n${result.assertions.map(item => `  ${item.label.padEnd(24)} ${item.pass ? 'PASS' : 'FAIL'}${item.detail ? ` (${item.detail})` : ''}`).join('\n')}\n`);
   if (result.assertions.some(item => !item.pass)) throw new Error(`${result.name}: ${result.assertions.filter(item => !item.pass).map(item => item.label).join(', ')}`);
 }
@@ -40,7 +42,7 @@ process.stdout.write('Example semantic accuracy\n');
 for (const [name, value] of [...totals.examples].sort()) process.stdout.write(`  ${name.padEnd(30)} ${formatRatio(value.passed, value.total)}\n`);
 process.stdout.write('Call classification\n');
 for (const [name, value] of [...totals.calls].sort()) process.stdout.write(`  ${name.padEnd(16)} internal ${value.resolved}/${value.resolvable} external ${value.external} ambiguous ${value.ambiguous} dynamic ${value.dynamic} unknown ${value.unknown}\n`);
-process.stdout.write(`real-world semantic validation passed: 20/20 QuickNode cases, ${secondaryResults.length}/${secondaryResults.length} independent cases, Steel PASS, Shank/Codama PASS\n`);
+process.stdout.write(`real-world semantic validation passed: 20/20 QuickNode cases, ${secondaryResults.length}/${secondaryResults.length} independent cases, Steel PASS, Shank/Codama PASS, official Solang PASS\n`);
 
 function evaluate(expected, report) {
   const assertions = []; const metrics = new Map(); const add = (label, pass, detail = '') => assertions.push({ label, pass, detail });
@@ -146,6 +148,25 @@ function validateShank(root) {
   const report = analyze(root, false); const program = report.programs.find(item => item.frameworkEvidence.some(evidence => evidence.framework === 'shank-metadata')); const names = program ? program.instructions.map(item => item.name) : [];
   const instructionReconciliations = (report.idl?.reconciliations || []).filter(item => item.item.startsWith('instruction:'));
   return { name: 'QuickNode Shank/Codama', assertions: [{ label: 'Shank metadata', pass: !!program, detail: program?.name || 'none' }, { label: 'instruction metadata', pass: names.length === 4 && ['AddCar', 'BookRental', 'PickUpCar', 'ReturnCar'].every(name => names.includes(name)), detail: names.join(', ') }, { label: 'account ordering', pass: !!program && (program.relationships || []).length >= 13, detail: String(program?.relationships?.length || 0) }, { label: 'IDL discovery', pass: (report.idl?.programs.length || 0) === 1, detail: String(report.idl?.programs.length || 0) }, { label: 'IDL instruction matches', pass: instructionReconciliations.filter(item => item.status === 'MATCHED').length === 4, detail: '4 expected' }, { label: 'IDL instruction mismatches', pass: instructionReconciliations.every(item => item.status !== 'MISMATCH'), detail: `${instructionReconciliations.filter(item => item.status === 'MISMATCH').length} mismatch(es)` }, { label: 'generated clients excluded', pass: report.files.every(file => !file.uri.includes('/clients/')), detail: `${report.files.length} source files` }] };
+}
+
+function validateSolang(root) {
+  const generated = path.join(cacheRoot, 'solang-official-token');
+  fs.rmSync(generated, { recursive: true, force: true }); fs.mkdirSync(generated, { recursive: true });
+  fs.copyFileSync(path.join(root, 'integration/solana/token.sol'), path.join(generated, 'token.sol'));
+  const report = analyze(generated, true); const program = report.programs.find(item => item.name === 'Token');
+  const names = new Set(program?.instructions.map(item => item.name) || []); const cpis = program?.securitySurface.cpiSites || [];
+  const operations = new Set(cpis.map(item => item.operation)); const runtime = new Set((program?.runtimeOperations || []).map(item => item.api));
+  const flows = new Set((program?.assetFlows || []).map(item => item.operation));
+  return { name: 'official Solang SPL Token example', assertions: [
+    { label: 'framework', pass: !!program?.frameworkEvidence.some(item => item.framework === 'solang'), detail: program?.name || 'none' },
+    { label: 'instructions', pass: ['total_supply', 'get_balance', 'mint_to', 'transfer', 'burn'].every(name => names.has(name)), detail: [...names].join(', ') },
+    { label: 'documented CPIs', pass: cpis.length === 3 && ['mint_to', 'transfer', 'burn'].every(operation => operations.has(operation)), detail: [...operations].join(', ') },
+    { label: 'read helpers excluded', pass: !operations.has('total_supply') && !operations.has('get_balance'), detail: [...operations].join(', ') },
+    { label: 'read helpers modeled', pass: runtime.has('SplToken.total_supply') && runtime.has('SplToken.get_balance'), detail: [...runtime].join(', ') },
+    { label: 'asset flows', pass: ['mint_to', 'transfer', 'burn'].every(operation => flows.has(operation)), detail: [...flows].join(', ') },
+    { label: 'account annotations', pass: (program?.accounts.length || 0) === 11 && (program?.relationships || []).every(relation => program.accounts.some(account => account.id === relation.accountId)), detail: String(program?.accounts.length || 0) }
+  ] };
 }
 
 function analyze(target, disableIdl) {

@@ -3,13 +3,30 @@ import { createSourceProgram, offsetLocation, simpleCallGraph, stableId, textFil
 import { FrontendResult, SourceFrontendInput } from './solangFrontend';
 
 interface AssemblyLine { number: number; start: number; code: string; label?: string; opcode?: string; operands: string; }
-const sbfOpcode = /^(?:mov(?:32|64)?|ldx(?:b|h|w|dw)|stx?(?:b|h|w|dw)|add(?:32|64)?|sub(?:32|64)?|mul(?:32|64)?|div(?:32|64)?|mod(?:32|64)?|and(?:32|64)?|or(?:32|64)?|xor(?:32|64)?|lsh(?:32|64)?|rsh(?:32|64)?|arsh(?:32|64)?|neg(?:32|64)?|be(?:16|32|64)|le(?:16|32|64)|ja|j(?:eq|ne|gt|ge|lt|le|sgt|sge|slt|sle)(?:32)?|call|callx|syscall|exit)$/i;
+/** Complete mnemonic set from Anza's versioned sBPF bytecode specification. */
+const SBF_OPCODES = new Set([
+  'lddw', 'ldxb', 'ldxh', 'ldxw', 'ldxdw', 'stb', 'sth', 'stw', 'stdw', 'stxb', 'stxh', 'stxw', 'stxdw',
+  'add32', 'add64', 'sub32', 'sub64', 'mul32', 'mul64', 'div32', 'div64', 'mod32', 'mod64',
+  'or32', 'or64', 'and32', 'and64', 'xor32', 'xor64', 'lsh32', 'lsh64', 'rsh32', 'rsh64',
+  'arsh32', 'arsh64', 'neg32', 'neg64', 'mov32', 'mov64', 'le', 'be',
+  'uhmul64', 'udiv32', 'udiv64', 'urem32', 'urem64', 'lmul32', 'lmul64', 'shmul64',
+  'sdiv32', 'sdiv64', 'srem32', 'srem64', 'hor64',
+  'ja', 'jeq', 'jgt', 'jge', 'jset', 'jne', 'jsgt', 'jsge', 'jlt', 'jle', 'jslt', 'jsle',
+  'jeq32', 'jgt32', 'jge32', 'jset32', 'jne32', 'jsgt32', 'jsge32', 'jlt32', 'jle32', 'jslt32', 'jsle32',
+  'call', 'callx', 'syscall', 'exit'
+]);
 
 export function analyzeSbfAssembly(input: SourceFrontendInput): FrontendResult {
-  const lines = parseLines(input.source); const signals = [lines.some(line => /\br(?:10|[0-9])\b/i.test(`${line.opcode ?? ''} ${line.operands}`)), lines.some(line => !!line.opcode && sbfOpcode.test(line.opcode)), lines.some(line => /\bsol_[a-z0-9_]+\b/i.test(line.operands)), lines.some(line => line.label === 'entrypoint' || /\.g(?:lobl|lobal)\s+entrypoint/.test(line.code))].filter(Boolean).length;
+  const lines = parseLines(input.source);
+  const hasRegisters = lines.some(line => /\br(?:10|[0-9])\b/i.test(`${line.opcode ?? ''} ${line.operands}`));
+  const hasIsa = lines.some(line => !!line.opcode);
+  const hasNamedSolanaSyscall = lines.some(line => /\bsol_[a-z0-9_]+\b/i.test(line.operands));
+  const hasEntrypoint = lines.some(line => line.label === 'entrypoint' || /\.g(?:lobl|lobal)\s+entrypoint\b/.test(line.code) || /\.text\.entrypoint\b/.test(line.code));
+  const hasExplicitSbpfExtension = /\.sbpf(?:[?#]|$)/i.test(input.uri);
+  const signals = [hasRegisters, hasIsa, hasNamedSolanaSyscall, hasEntrypoint, hasExplicitSbpfExtension].filter(Boolean).length;
   const assemblyCounts = countAssemblyLines(input.source);
-  const file = textFileMetric(input.uri, input.source, 'sbf-assembly', { ...assemblyCounts, functions: 0, functionCalls: lines.filter(line => /^(call|callx|syscall)$/i.test(line.opcode ?? '')).length, loops: lines.filter(line => /^j/i.test(line.opcode ?? '')).length });
-  if (signals < 2) return { programs: [], file, diagnostics: [`${input.uri}: assembly lacks sufficient sBPF/Solana evidence; metrics recorded without creating a Solana program.`] };
+  const file = textFileMetric(input.uri, input.source, 'sbf-assembly', { ...assemblyCounts, functions: 0, functionCalls: lines.filter(line => /^(call|callx|syscall)$/i.test(line.opcode ?? '')).length, loops: countBackwardJumps(lines) });
+  if (!hasIsa || !(hasNamedSolanaSyscall || hasEntrypoint || hasExplicitSbpfExtension)) return { programs: [], file, diagnostics: [`${input.uri}: assembly lacks positive sBPF/Solana identity evidence (entrypoint, named Solana syscall, or .sbpf source); metrics recorded without creating a Solana program.`] };
   const globals = new Set(lines.flatMap(line => { const match = /^\.g(?:lobl|lobal)\s+([\w.$]+)/.exec(line.code); return match ? [match[1]] : []; }));
   const typed = new Set(lines.flatMap(line => { const match = /^\.type\s+([\w.$]+)\s*,\s*[@%]function/.exec(line.code); return match ? [match[1]] : []; }));
   const directTargets = new Set(lines.filter(line => line.opcode === 'call' && /^[A-Za-z_.$][\w.$]*$/.test(line.operands.trim())).map(line => line.operands.trim()));
@@ -22,7 +39,7 @@ export function analyzeSbfAssembly(input: SourceFrontendInput): FrontendResult {
   const calls: CallSite[] = []; const runtime: RuntimeOperation[] = [];
   for (let index = 0; index < functionStarts.length; index++) {
     const current = functionStarts[index]; const body = lines.slice(current.index, functionStarts[index + 1]?.index ?? lines.length); const first = body[0]; const last = body.at(-1) ?? first; const location = { ...lineLocation(input, first), endLine: last.number, endColumn: last.code.length };
-    const qualified = `${programName}::${current.name}`; const conditional = body.filter(line => /^j(?:eq|ne|gt|ge|lt|le|sgt|sge|slt|sle)/i.test(line.opcode ?? '')).length;
+    const qualified = `${programName}::${current.name}`; const conditional = body.filter(line => isConditionalJump(line.opcode)).length;
     program.functions.push({ name: current.name, qualifiedName: qualified, location, lines: last.number - first.number + 1, codeLines: body.filter(line => line.code.trim()).length, complexity: 1 + conditional, parameters: 0, isPublic: globals.has(current.name) || current.name === 'entrypoint', visibility: globals.has(current.name) ? 'global' : 'local', isUnsafe: false, program: programName });
     if (current.name === 'entrypoint' || globals.has(current.name) && /entrypoint/i.test(current.name)) program.instructions.push({ id: stableId('instruction', input.uri, first.number, current.name), name: current.name, functionName: current.name, handler: qualified, location, confidence: 0.95, evidence: [{ description: 'Explicit sBPF assembly entrypoint symbol', location }] });
     for (const line of body) {
@@ -52,7 +69,16 @@ function addSyscall(program: ProgramUnit, runtime: RuntimeOperation[], input: So
 }
 
 function runtimeOp(input: SourceFrontendInput, fn: string, line: AssemblyLine, kind: string, api: string): RuntimeOperation { const location = lineLocation(input, line); return { id: stableId('runtime', input.uri, line.number, `${kind}:${api}`), kind, api, functionName: fn, instructionIds: [], location, evidence: [{ description: `sBPF ${kind} instruction; account/state binding is unavailable at source assembly level`, location }] }; }
-function parseLines(source: string): AssemblyLine[] { let offset = 0; return source.split(/\r?\n/).map((raw, index) => { const start = offset; offset += raw.length + 1; const code = stripComment(raw).trim(); const labelMatch = /^([A-Za-z_.$][\w.$]*):/.exec(code); const rest = labelMatch ? code.slice(labelMatch[0].length).trim() : code; const instruction = /^([A-Za-z][A-Za-z0-9]*)\s*(.*)$/.exec(rest); return { number: index + 1, start, code, label: labelMatch?.[1], opcode: instruction && sbfOpcode.test(instruction[1]) ? instruction[1].toLowerCase() : undefined, operands: instruction && sbfOpcode.test(instruction[1]) ? instruction[2].trim() : '' }; }); }
+function parseLines(source: string): AssemblyLine[] { let offset = 0; return source.split(/\r?\n/).map((raw, index) => { const start = offset; offset += raw.length + 1; const code = stripComment(raw).trim(); const labelMatch = /^([A-Za-z_.$][\w.$]*):/.exec(code); const rest = labelMatch ? code.slice(labelMatch[0].length).trim() : code; const instruction = /^([A-Za-z][A-Za-z0-9]*)\s*(.*)$/.exec(rest); const opcode = instruction?.[1].toLowerCase(); return { number: index + 1, start, code, label: labelMatch?.[1], opcode: opcode && SBF_OPCODES.has(opcode) ? opcode : undefined, operands: opcode && SBF_OPCODES.has(opcode) ? instruction![2].trim() : '' }; }); }
+function isConditionalJump(opcode: string | undefined): boolean { return !!opcode && /^j(?:eq|ne|gt|ge|set|lt|le|sgt|sge|slt|sle)(?:32)?$/.test(opcode); }
+function countBackwardJumps(lines: AssemblyLine[]): number {
+  const labels = new Map(lines.filter(line => line.label).map(line => [line.label!, line.number]));
+  return lines.filter(line => {
+    if (!line.opcode || !(line.opcode === 'ja' || isConditionalJump(line.opcode))) return false;
+    const target = line.operands.split(',').at(-1)?.trim(); const targetLine = target ? labels.get(target) : undefined;
+    return targetLine !== undefined && targetLine <= line.number;
+  }).length;
+}
 function stripComment(line: string): string { let quoted = false; for (let i = 0; i < line.length; i++) { if (line[i] === '"' && line[i - 1] !== '\\') quoted = !quoted; if (!quoted && (line[i] === ';' || line[i] === '#' || line.slice(i, i + 2) === '//')) return line.slice(0, i); } return line; }
 function countAssemblyLines(source: string): { lines: number; blankLines: number; commentLines: number; codeLines: number } { const lines = source.split(/\r?\n/); let blankLines = 0, commentLines = 0, codeLines = 0; for (const line of lines) { if (!line.trim()) blankLines++; else if (stripComment(line).trim()) codeLines++; else commentLines++; } return { lines: lines.length, blankLines, commentLines, codeLines }; }
 function lineLocation(input: SourceFrontendInput, line: AssemblyLine) { return offsetLocation(input.uri, input.source, line.start, line.start + line.code.length); }

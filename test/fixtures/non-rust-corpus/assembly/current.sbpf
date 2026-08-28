@@ -1,0 +1,11 @@
+.text
+.globl entrypoint
+entrypoint:
+    lddw r1, 0x100000000
+    uhmul64 r2, r1
+loop:
+    add64 r2, 1
+    jset r2, 1, loop
+    syscall sol_create_program_address
+    syscall sol_invoke_signed_c
+    exit

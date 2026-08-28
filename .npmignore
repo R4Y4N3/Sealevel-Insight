@@ -1,0 +1,16 @@
+*
+!dist/
+!dist/cli.js
+!dist/extension.js
+!dist/*.wasm
+!media/
+!media/icon.png
+!schemas/
+!schemas/report.schema.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!SECURITY.md
+!SUPPORT.md
+!THIRD_PARTY_NOTICES.md
+!package.json

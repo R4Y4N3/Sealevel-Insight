@@ -1,0 +1,29 @@
+[package]
+name = "sealevel-insight"
+version = "0.8.1"
+edition = "2021"
+rust-version = "1.70"
+description = "Offline Solana architecture and audit-scoping CLI launcher (Node.js runtime required)."
+license = "MIT"
+repository = "https://github.com/R4Y4N3/Sealevel-Insight"
+homepage = "https://github.com/R4Y4N3/Sealevel-Insight#readme"
+documentation = "https://docs.rs/sealevel-insight"
+readme = "README.md"
+keywords = ["solana", "code-analysis", "audit", "cli", "static-analysis"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "src/**",
+  "assets/**",
+  "README.md",
+  "LICENSE",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "DISCLOSURE",
+  "THIRD_PARTY_NOTICES.md",
+]
+
+[[bin]]
+name = "sealevel-insight"
+path = "src/main.rs"

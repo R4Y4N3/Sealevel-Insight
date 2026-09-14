@@ -42,6 +42,18 @@ The repository manifest is intentionally private so the VS Code extension cannot
 
 Exit code `0` means success, `1` means analysis/configuration failure, and `2` means a configured quality policy failed.
 
+The same CLI is also distributed through crates.io as `sealevel-insight`:
+
+```bash
+cargo install sealevel-insight
+sealevel-insight analyze . --format markdown --output report.md
+```
+
+The Cargo package is a transparent launcher around the bundled Node.js/WASM
+engine, not a native Rust rewrite. Node.js 18 or newer is required. The
+launcher embeds the CLI and parser grammars, extracts them into a versioned
+user cache, and performs analysis locally without downloading runtime assets.
+
 ## Program intelligence
 
 - Proper TOML parsing for virtual/nested Cargo workspaces, inherited package/dependency fields, targets, features, target conditions, renamed/path/optional/dev/build dependencies, and diagnostic recovery.
@@ -113,9 +125,21 @@ The Cargo graph models workspaces, packages, targets, dependencies, features, cl
 
 Program IDs may come from `declare_id!`, source constants, Anchor.toml, Quasar.toml, and IDL metadata. Conflicting evidence is preserved and reported, never silently selected.
 
-Sealevel Insight is currently a TypeScript/Node.js analyzer with bundled WASM parsers, not a Rust crate. Cargo is supported as an analyzed input format: the CLI reads Cargo workspaces and can import saved `cargo metadata --format-version 1` JSON with `--cargo-metadata`, without running Cargo automatically. A future `cargo install` distribution would require a separate native Rust implementation or a Rust launcher around the existing engine, so it is not part of the current release path.
+Sealevel Insight's analysis engine remains TypeScript/Node.js with bundled WASM parsers. Cargo is supported both as an analyzed input format and as a distribution channel: the CLI reads Cargo workspaces and can import saved `cargo metadata --format-version 1` JSON with `--cargo-metadata`, while the published `sealevel-insight` crate is a transparent launcher around the same offline engine. The launcher requires Node.js 18 or newer but does not require the Solana or Anchor toolchains.
 
 For a reproducible resolved graph, generate metadata separately with `cargo metadata --format-version 1 --locked --offline > cargo-metadata.json` when the Cargo dependency cache is available, then pass it with `--cargo-metadata`. This keeps the analyzer itself local, deterministic, and independent of a Rust installation.
+
+The npm package and Cargo launcher are built from the same versioned CLI and
+parser assets. Build and validate the Cargo artifact from a checkout with:
+
+```bash
+npm run package:cargo
+npm run test:cargo-package
+```
+
+Publish only `cargo/sealevel-insight/Cargo.toml` after a clean `cargo publish
+--dry-run --manifest-path cargo/sealevel-insight/Cargo.toml`; crates.io
+publication is permanent.
 
 ## Accounts, state, CPI, PDA, and runtime
 

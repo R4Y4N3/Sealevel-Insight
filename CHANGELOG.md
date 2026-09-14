@@ -4,6 +4,7 @@
 
 - Added the separately generated npm CLI distribution with dual-use disclosure, clean-install validation, and Cargo metadata workflow documentation.
 - Synchronized the tool and report schema version with the `0.8.1` release package.
+- Added a crates.io `sealevel-insight` launcher package embedding the same CLI and parser assets, with Cargo check, test, packaging, and offline-runtime validation gates.
 
 ## 0.8.0
 

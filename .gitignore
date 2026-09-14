@@ -12,3 +12,4 @@ dist-test/
 dist-integration/
 .sealevel-insight-cache/
 .real-world-cache/
+cargo/**/target/

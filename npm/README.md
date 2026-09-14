@@ -53,7 +53,14 @@ cargo metadata --format-version 1 --locked --offline > cargo-metadata.json
 sealevel-insight analyze . --cargo-metadata cargo-metadata.json --no-cache
 ```
 
-Cargo is an input and metadata source here, not a runtime dependency. The published CLI remains a Node.js package; a future `cargo install` package would require a separately maintained native Rust engine or launcher.
+Cargo is also a distribution channel. The published `sealevel-insight` crate is a transparent launcher around this same bundled Node.js/WASM engine (not a native Rust rewrite), so Node.js 18 or newer is required:
+
+```bash
+cargo install sealevel-insight
+sealevel-insight analyze . --format markdown --output report.md
+```
+
+The launcher embeds the CLI and parser grammars, extracts them into a versioned user cache, and performs analysis locally without downloading runtime assets. From a checkout, build and validate it with `npm run package:cargo && npm run test:cargo-package`.
 
 ## Privacy and safety
 

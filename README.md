@@ -1,4 +1,4 @@
-# Sealevel Insight v0.8
+# Sealevel Insight v0.8.1
 
 Local program intelligence, architecture, metrics, and audit-scoping for Solana source code. Sealevel Insight is a VS Code extension and CLI designed to make an unfamiliar program repository answerable: what is in scope, what is externally reachable, which accounts and state are involved, where CPIs and PDAs occur, which token and asset movements happen and under whose authority, and which conclusions remain unresolved.
 
@@ -11,7 +11,7 @@ npm install
 npm run typecheck
 npm test
 npm run package
-code --install-extension sealevel-insight-0.8.0.vsix
+code --install-extension sealevel-insight-0.8.1.vsix
 ```
 
 Open a Solana workspace and run **Sealevel Insight: Analyze Workspace**. Rust, Solang Solidity, and hand-written sBPF assembly feed the same deterministic report, architecture, reachability, and audit-scoping model.
@@ -28,6 +28,17 @@ sealevel-insight baseline save . --output baseline.json
 sealevel-insight diff baseline.json report.json --output changes.json
 sealevel-insight cache clear .
 ```
+
+Published CLI packages can be run without cloning the repository:
+
+```bash
+npx sealevel-insight analyze . --format json --output report.json
+npm install --global sealevel-insight
+```
+
+The npm artifact contains only the bundled CLI, local parser WASM files, documentation, and notices. It has a separate package manifest from the VS Code extension and declares its dual-use defensive-analysis purpose in `DISCLOSURE`.
+
+The repository manifest is intentionally private so the VS Code extension cannot be published accidentally as an npm package. To build and validate the public CLI artifact, run `npm run package:cli && npm run test:cli-package`, then publish only `dist-cli-package/` through npm.
 
 Exit code `0` means success, `1` means analysis/configuration failure, and `2` means a configured quality policy failed.
 
@@ -101,6 +112,10 @@ Rust uses Tree-sitter Rust plus framework adapters. Solang uses the bundled Tree
 The Cargo graph models workspaces, packages, targets, dependencies, features, classifications, and internal edges. Classification combines target type, crate type, dependencies, entrypoint/framework syntax, configs, identities, and source semantics; importing a Solana crate alone is insufficient.
 
 Program IDs may come from `declare_id!`, source constants, Anchor.toml, Quasar.toml, and IDL metadata. Conflicting evidence is preserved and reported, never silently selected.
+
+Sealevel Insight is currently a TypeScript/Node.js analyzer with bundled WASM parsers, not a Rust crate. Cargo is supported as an analyzed input format: the CLI reads Cargo workspaces and can import saved `cargo metadata --format-version 1` JSON with `--cargo-metadata`, without running Cargo automatically. A future `cargo install` distribution would require a separate native Rust implementation or a Rust launcher around the existing engine, so it is not part of the current release path.
+
+For a reproducible resolved graph, generate metadata separately with `cargo metadata --format-version 1 --locked --offline > cargo-metadata.json` when the Cargo dependency cache is available, then pass it with `--cargo-metadata`. This keeps the analyzer itself local, deterministic, and independent of a Rust installation.
 
 ## Accounts, state, CPI, PDA, and runtime
 

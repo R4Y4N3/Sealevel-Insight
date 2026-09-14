@@ -13,13 +13,13 @@ import { countLines } from '../../src/utils/text';
 import { buildCargoGraph } from '../../src/discovery/cargoGraph';
 import { applyCargoMetadata } from '../../src/discovery/cargoMetadata';
 import { normalizeIdl, reconcileIdl } from '../../src/idl/reconciliation';
-import { isCurrentSchemaVersion } from '../../src/core/version';
+import { isCurrentSchemaVersion, SCHEMA_VERSION } from '../../src/core/version';
 
 const wasm = path.resolve(__dirname, '../../../resources/parsers/tree-sitter-rust.wasm');
 
 describe('Sealevel Insight v0.6 release semantics', () => {
   it('accepts only exact current-schema reports from persisted editor state', () => {
-    assert.equal(isCurrentSchemaVersion('0.8.0'), true);
+    assert.equal(isCurrentSchemaVersion(SCHEMA_VERSION), true);
     assert.equal(isCurrentSchemaVersion('0.7.0'), false);
     assert.equal(isCurrentSchemaVersion('0.6.0'), false);
   });
@@ -101,7 +101,7 @@ describe('Sealevel Insight v0.6 release semantics', () => {
 
   it('round-trips only compatible current-schema cache entries', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sealevel-cache-')); const report = await sampleReport('pub fn handler() {}'); const key = analysisCacheKey([{ uri: 'lib.rs', source: 'pub fn handler() {}' }], {});
-    try { await writeAnalysisCache(directory, key, report); assert.equal((await readAnalysisCache(directory, key))?.schemaVersion, '0.8.0'); await fs.writeFile(path.join(directory, `${key}.json`), JSON.stringify({ ...report, schemaVersion: '0.6.0' })); assert.equal(await readAnalysisCache(directory, key), undefined); }
+    try { await writeAnalysisCache(directory, key, report); assert.equal((await readAnalysisCache(directory, key))?.schemaVersion, SCHEMA_VERSION); await fs.writeFile(path.join(directory, `${key}.json`), JSON.stringify({ ...report, schemaVersion: '0.6.0' })); assert.equal(await readAnalysisCache(directory, key), undefined); }
     finally { await clearAnalysisCache(directory); }
   });
 

@@ -1,7 +1,9 @@
 node_modules/
 out/
 dist/
+dist-cli-package/
 *.vsix
+*.tgz
 .env
 .DS_Store
 coverage/

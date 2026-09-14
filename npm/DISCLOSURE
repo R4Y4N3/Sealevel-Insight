@@ -1,0 +1,5 @@
+Sealevel Insight is a defensive, local code-analysis utility for Solana programs. It is published as dual-use software because its reports include security-relevant architecture and audit-scoping evidence such as externally reachable instructions, account privileges, CPIs, PDA signing, state mutation, and token or asset-flow relationships.
+
+The CLI parses source and metadata locally and produces deterministic JSON, Markdown, or HTML reports. It does not execute analyzed programs, exploit systems, access wallets or private keys, contact Solana RPC endpoints, upload source code, collect telemetry, invoke AI services, or provide offensive payloads. The intended use is software architecture review, audit scoping, defensive research, and reproducible CI quality checks on code the user is authorized to inspect.
+
+Dynamic dispatch, opaque macros, unavailable dependencies, and runtime-selected values remain explicit unresolved evidence rather than being guessed or acted upon.

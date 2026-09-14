@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1
+
+- Added the separately generated npm CLI distribution with dual-use disclosure, clean-install validation, and Cargo metadata workflow documentation.
+- Synchronized the tool and report schema version with the `0.8.1` release package.
+
 ## 0.8.0
 
 - Added an evidence-bounded Solang frontend for `.sol` sources: contract/program identity, public/external instructions and constructors, account annotations, PDA seeds/bumps, local calls, Solana external calls, SPL Token CPIs, events, metrics, and reachability evidence.
@@ -10,6 +15,7 @@
 - Aligned Solang SPL Token classification with the current official API: read helpers no longer appear as CPIs, unsupported operations remain unresolved, and annotated constructor parameters feed deterministic PDA seed/bump evidence.
 - Aligned assembly parsing with the current Anza sBPF opcode table, including PQR instructions, `lddw`, `jset`, and 32-bit jumps; generic eBPF is no longer classified as a Solana program without Solana-specific evidence.
 - Added a deterministic non-Rust ground-truth corpus, current upstream Solang validation, reproducible dual-grammar builds with pinned integrity checks, strict stored-report schema invalidation, and a minimal npm package allowlist.
+- Added a dedicated, dual-use-declared npm CLI package with a clean-install/offline fixture validation path; the VS Code extension remains a separate VSIX artifact.
 - Removed an obsolete, non-extension `allowScripts` manifest block that named development-only signing and keychain packages not shipped or used by Sealevel Insight.
 - Completed the bundled third-party notices for the TOML parser, Web Tree-sitter runtime, and Tree-sitter Rust grammar.
 - Clarified the confirmed Marketplace publisher identity and manual release policy in the packaged README.

@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/R4Y4N3/Sealevel-Insight/schemas/report.schema.json",
-  "title": "Sealevel Insight Report 0.8.0",
+  "title": "Sealevel Insight Report 0.8.1",
   "type": "object",
   "required": ["schemaVersion", "tool", "generatedAt", "programs", "files", "diagnostics", "summary"],
   "properties": {
-    "schemaVersion": { "const": "0.8.0" },
+    "schemaVersion": { "const": "0.8.1" },
     "tool": {
       "type": "object",
       "required": ["name", "version"],
-      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.8.0" } },
+      "properties": { "name": { "const": "Sealevel Insight" }, "version": { "const": "0.8.1" } },
       "additionalProperties": false
     },
     "generatedAt": { "type": "string", "minLength": 1 },
